@@ -33,6 +33,7 @@ public sealed class AppSettings
     public bool NotifyNewMail { get; set; } = true;
     public bool UseSiteNotifications { get; set; }
     public SavedWindowPosition? WindowPosition { get; set; }
+    public double ReaderListWidth { get; set; } = 310;
 }
 
 // Win32 workspace coordinates, used only with Get/SetWindowPlacement.

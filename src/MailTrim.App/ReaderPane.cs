@@ -46,14 +46,17 @@ public sealed class ReaderPane : Grid
         ScrollViewer.SetCanContentScroll(list, true);
         list.ItemTemplate = (DataTemplate)System.Windows.Markup.XamlReader.Parse("""
         <DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
-         <StackPanel Margin="6" Width="250">
+         <StackPanel Margin="6">
           <TextBlock FontWeight="SemiBold" TextTrimming="CharacterEllipsis"><TextBlock.Text><MultiBinding StringFormat="{}{0} · {1}"><Binding Path="Sender"/><Binding Path="Date"/></MultiBinding></TextBlock.Text></TextBlock>
           <TextBlock Text="{Binding Subject}" TextWrapping="Wrap" MaxHeight="40" Margin="0,3,0,3"/>
           <TextBlock Text="{Binding Preview}" TextTrimming="CharacterEllipsis" Opacity="0.65"/>
          </StackPanel>
         </DataTemplate>
-        """);        ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(310) });
-        ColumnDefinitions.Add(new ColumnDefinition());
+        """);
+        list.ItemContainerStyle = new Style(typeof(ListBoxItem)) { Setters = { new Setter(Control.HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch) } };
+        ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(session.ReaderListWidth), MinWidth = 260, MaxWidth = 520 });
+        ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(5) });
+        ColumnDefinitions.Add(new ColumnDefinition { MinWidth = 300 });
         var left = new DockPanel(); Children.Add(left);
         var tools = new StackPanel(); DockPanel.SetDock(tools, Dock.Top); left.Children.Add(tools);
         var actions = new StackPanel { Orientation = Orientation.Horizontal };
@@ -81,12 +84,22 @@ public sealed class ReaderPane : Grid
         };
         notice.FontSize = 11; notice.MaxHeight = 32;
         tools.Children.Add(notice); left.Children.Add(list);        list.SelectionChanged += async (_, _) => { if (!restoring && list.SelectedItem is ReaderLetter letter) await Read(letter); };
-        var right = new DockPanel(); SetColumn(right, 1); Children.Add(right);
+        var right = new DockPanel(); SetColumn(right, 2); Children.Add(right);
         var open = new Button { Content = "Ответить / вложения ↗", Padding = new Thickness(8,4,8,4), HorizontalAlignment = HorizontalAlignment.Left };
         DockPanel.SetDock(open, Dock.Top); right.Children.Add(open); open.Click += (_, _) => OpenOriginal();
         right.Children.Add(new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
         AddText("Выберите письмо слева. Ответы, ссылки и вложения доступны в оригинале.");
+        var splitter = new GridSplitter { Width = 5, HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch,
+            ResizeDirection = GridResizeDirection.Columns, ResizeBehavior = GridResizeBehavior.PreviousAndNext, ShowsPreview = true,
+            ToolTip = "Изменить ширину списка. Двойной щелчок — стандартная ширина.", Focusable = true };
+        splitter.SetResourceReference(BackgroundProperty, "Line"); SetColumn(splitter, 1); Children.Add(splitter);
+        System.Windows.Automation.AutomationProperties.SetName(splitter, "Ширина списка писем");
+        splitter.DragCompleted += (_, _) => session.SaveReaderListWidth(ColumnDefinitions[0].ActualWidth);
+        splitter.KeyUp += (_, _) => session.SaveReaderListWidth(ColumnDefinitions[0].ActualWidth);
+        splitter.MouseDoubleClick += (_, _) => { ColumnDefinitions[0].Width = new GridLength(310); session.SaveReaderListWidth(310); };
     }
+    public void FocusSearch() { if (searchBox.IsEnabled) { searchBox.Focus(); searchBox.SelectAll(); } }
+    public Task ResetSearch() => SearchSaved("");
     public async Task SearchSaved(string query)
     {
         if (loading || lifetime.IsCancellationRequested) return;

@@ -22,6 +22,14 @@ public sealed class BrowserSession : IDisposable
     private bool disposed;
     private bool clearing;
     private int blocked;
+    public double ReaderListWidth => double.IsFinite(store.Settings.ReaderListWidth) ? Math.Clamp(store.Settings.ReaderListWidth, 260, 520) : 310;
+    public void SaveReaderListWidth(double width)
+    {
+        if (!double.IsFinite(width)) return;
+        var previous = store.Settings.ReaderListWidth;
+        store.Settings.ReaderListWidth = Math.Clamp(width, 260, 520);
+        try { store.Save(); } catch { store.Settings.ReaderListWidth = previous; status("Не удалось сохранить ширину списка."); }
+    }
 
     public void SetActive(bool active)
     {

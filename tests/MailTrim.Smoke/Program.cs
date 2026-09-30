@@ -165,6 +165,11 @@ internal static class Program
                 await pane.Start();
                 var readerList = ((DockPanel)pane.Children[0]).Children.OfType<ListBox>().Single();
                 Check(readerList.Items.Count == 1, "native reader displays extracted list");
+                pane.ColumnDefinitions[0].Width = new GridLength(420); pane.UpdateLayout();
+                var readerSplitter = pane.Children.OfType<GridSplitter>().Single();
+                readerSplitter.RaiseEvent(new System.Windows.Controls.Primitives.DragCompletedEventArgs(110, 0, false)
+                    { RoutedEvent = System.Windows.Controls.Primitives.Thumb.DragCompletedEvent });
+                Check(Math.Abs(new LocalStore(root).Settings.ReaderListWidth - 420) < 1, "reader divider width persists on disk after drag");
                 var completedReaderNavigation = false;
                 a.View.CoreWebView2.NavigationCompleted += (_, _) => completedReaderNavigation = true;
                 readerList.SelectedIndex = 0;
@@ -207,6 +212,7 @@ internal static class Program
                     Check(searchStopped, "cache search respects cancellation");
                 }
                 var resumed = new ReaderPane(a, () => { }); host.Children.Add(resumed); await resumed.Start();
+                Check(resumed.ColumnDefinitions[0].Width.Value == 420, "reopened reader restores customized list width");
                 Check(((DockPanel)resumed.Children[0]).Children.OfType<ListBox>().Single().Items.Count == 1, "reader restores cached list after reopening");
                 Check(((DockPanel)resumed.Children[0]).Children.OfType<ListBox>().Single().SelectedItem is ReaderLetter, "reader restores selected message independently for profile");
                 var restoredScroll = (ScrollViewer)((DockPanel)resumed.Children[1]).Children[1];

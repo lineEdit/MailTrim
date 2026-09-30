@@ -33,8 +33,19 @@ public partial class MainWindow : Window
         };
         Closed += (_, _) => { monitor?.Dispose(); desktop?.Dispose(); desktop = null; CloseReader(); foreach (var session in sessions.Values) session.Dispose(); store.Log("app_closed"); };
         Closing += (_, e) => { if (busy) { e.Cancel = true; Status.Text = "Дождитесь завершения текущей операции."; } };
-        PreviewKeyDown += (_, e) =>
+        PreviewKeyDown += async (_, e) =>
         {
+            if (busy) return;
+            if ((Keyboard.Modifiers & ModifierKeys.Control) != 0 && e.Key == Key.Tab && Profiles.Items.Count > 1)
+            {
+                var step = (Keyboard.Modifiers & ModifierKeys.Shift) != 0 ? -1 : 1;
+                Profiles.SelectedIndex = (Profiles.SelectedIndex + step + Profiles.Items.Count) % Profiles.Items.Count;
+                e.Handled = true; return;
+            }
+            if (reader is not null && Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.F)
+            { reader.FocusSearch(); e.Handled = true; return; }
+            if (reader is not null && Keyboard.Modifiers == ModifierKeys.None && e.Key == Key.Escape)
+            { e.Handled = true; await reader.ResetSearch(); return; }
             if (e.Key == Key.F5) { CloseReader(); Current?.View.Reload(); e.Handled = true; }
             if (e.SystemKey == Key.Left && Current?.View.CanGoBack == true) { CloseReader(); Current.View.GoBack(); e.Handled = true; }
         };
