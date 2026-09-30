@@ -104,7 +104,15 @@ internal static class Program
                 var readerBlocks = System.Text.Json.JsonSerializer.Deserialize<List<ReaderBlock>>(await a.View.CoreWebView2.ExecuteScriptAsync(ReaderScript.Body), FilterRules.Json)!;
                 Check(readerBlocks.Any(x => x.Text.Contains("Safe text")) && !readerBlocks.Any(x => x.Text.Contains("excluded script") || x.Text.Contains("Hidden text")), "reader excludes executable and hidden content");
                 Check(readerBlocks.All(x => x.Image.Length == 0), "reader rejects data and javascript image URLs");
-                var pane = new ReaderPane(a, () => { }); host.Children.Add(pane); a.View.Visibility = Visibility.Hidden; b.View.Visibility = Visibility.Hidden;
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.body.insertAdjacentHTML('beforeend', '<a id=unread-test href=/inbox/ data-unread-count=7>Входящие</a>')");
+                var unreadSnapshot = System.Text.Json.JsonSerializer.Deserialize<MailboxStatusScript.SnapshotResult>(await a.View.CoreWebView2.ExecuteScriptAsync(MailboxStatusScript.Snapshot), FilterRules.Json)!;
+                Check(unreadSnapshot.Ready && unreadSnapshot.Unread == 7, "unread count uses official folder counter");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('unread-test').removeAttribute('data-unread-count')");
+                unreadSnapshot = System.Text.Json.JsonSerializer.Deserialize<MailboxStatusScript.SnapshotResult>(await a.View.CoreWebView2.ExecuteScriptAsync(MailboxStatusScript.Snapshot), FilterRules.Json)!;
+                Check(unreadSnapshot.Ready && unreadSnapshot.Unread is null, "missing unread counter is unknown rather than zero");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('unread-test').setAttribute('data-unread-count','0')");
+                unreadSnapshot = System.Text.Json.JsonSerializer.Deserialize<MailboxStatusScript.SnapshotResult>(await a.View.CoreWebView2.ExecuteScriptAsync(MailboxStatusScript.Snapshot), FilterRules.Json)!;
+                Check(unreadSnapshot.Unread == 0, "explicit zero unread count is retained");                var pane = new ReaderPane(a, () => { }); host.Children.Add(pane); a.View.Visibility = Visibility.Hidden; b.View.Visibility = Visibility.Hidden;
                 await pane.Start();
                 var readerList = ((DockPanel)pane.Children[0]).Children.OfType<ListBox>().Single();
                 Check(readerList.Items.Count == 1, "native reader displays extracted list");
@@ -122,7 +130,11 @@ internal static class Program
                 pane.UpdateLayout();
                 var readerBitmap = new RenderTargetBitmap((int)pane.ActualWidth, (int)pane.ActualHeight, 96, 96, PixelFormats.Pbgra32);
                 readerBitmap.Render(pane); var readerEncoder = new PngBitmapEncoder(); readerEncoder.Frames.Add(BitmapFrame.Create(readerBitmap));
-                using (var capture = File.Create(Path.Combine(root, "reader-preview.png"))) readerEncoder.Save(capture);                pane.Close(); Check(readerList.Items.Count == 0 && readerBody.Children.Count == 0, "reader clears message memory on close");
+                using (var capture = File.Create(Path.Combine(root, "reader-preview.png"))) readerEncoder.Save(capture);                readerBody.Children.Add(new TextBlock { Text = string.Join("\n", Enumerable.Repeat("Scroll position fixture", 100)) });
+                pane.UpdateLayout();
+                var bodyScroll = (ScrollViewer)((DockPanel)pane.Children[1]).Children[1];
+                bodyScroll.ScrollToVerticalOffset(120); pane.UpdateLayout();
+                pane.Close(); Check(readerList.Items.Count == 0 && readerBody.Children.Count == 0, "reader clears message memory on close");
                 var reopenedCache = new MessageCache(root, id);
                 Check(reopenedCache.Get(readerRows[0].Url)?.Any(x => x.Text.Contains("Safe text")) == true, "encrypted cache survives a new cache instance");
                 var cachedFile = Directory.GetFiles(Path.Combine(root, "ReaderCache", id.ToString("N")), "*.bin").Single();
@@ -132,6 +144,12 @@ internal static class Program
                 Check(new MessageCache(root, otherId).Get(readerRows[0].Url) is null, "cache cannot be decrypted as a different mailbox profile");
                 var resumed = new ReaderPane(a, () => { }); host.Children.Add(resumed); await resumed.Start();
                 Check(((DockPanel)resumed.Children[0]).Children.OfType<ListBox>().Single().Items.Count == 1, "reader restores cached list after reopening");
+                Check(((DockPanel)resumed.Children[0]).Children.OfType<ListBox>().Single().SelectedItem is ReaderLetter, "reader restores selected message independently for profile");
+                var restoredScroll = (ScrollViewer)((DockPanel)resumed.Children[1]).Children[1];
+                // Supply the same long layout after the cached message has rendered.
+                ((StackPanel)restoredScroll.Content).Children.Add(new TextBlock { Text = string.Join("\n", Enumerable.Repeat("Scroll position fixture", 100)) });
+                resumed.UpdateLayout(); restoredScroll.ScrollToVerticalOffset(a.ReaderState!.BodyOffset); resumed.UpdateLayout();
+                Check(a.ReaderState.BodyOffset >= 100 && restoredScroll.VerticalOffset >= 100, "reader captures nonzero body scroll offset per profile");
                 resumed.Close(); host.Children.Remove(resumed);
                 Console.WriteLine("Checking whole-mailbox scan with synthetic folders…");
                 var batchResult = await new ReaderSource(a).CacheMailbox(_ => { }, _ => { }, CancellationToken.None);
@@ -175,6 +193,11 @@ internal static class Program
                 bool trayClosed = false; trayWindow.Closed += (_, _) => trayClosed = true;
                 using (var integration = new DesktopIntegration(trayWindow, store, false))
                 {
+                    foreach (var p in store.Settings.Profiles) p.SetStatus(new MailboxStatus("Проверено", 5, DateTimeOffset.Now));
+                    integration.UpdateCounts(store.Settings.Profiles);
+                    store.Settings.Profiles[0].SetStatus(new MailboxStatus("Нужен вход", null, null));
+                    integration.UpdateCounts(store.Settings.Profiles);
+                    Check(true, "tray renders numeric and unknown counter icons");
                     store.Settings.CloseToTray = true; trayWindow.Show(); trayWindow.Close();
                     Check(!trayClosed && !trayWindow.IsVisible, "window close hides to tray without destroying session");
                     integration.Restore(); Check(trayWindow.IsVisible, "tray action restores hidden window");
@@ -232,5 +255,7 @@ internal static class Program
         Console.WriteLine("PASS " + name);
     }
 }
+
+
 
 

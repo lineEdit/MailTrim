@@ -9,6 +9,7 @@ namespace MailTrim.App;
 public sealed class BrowserSession : IDisposable
 {
     public WebView2 View { get; } = new();
+    public ReaderPosition? ReaderState { get; set; }
     public MessageCache Cache { get; private set; } = null!;
     private readonly LocalStore store;
     private readonly Window owner;
@@ -156,7 +157,7 @@ public sealed class BrowserSession : IDisposable
     }
     public async Task ClearData()
     {
-        Cache.Clear();
+        ReaderState = null; Cache.Clear();
         foreach (var p in popups.ToArray()) p.Window.Close();
         View.CoreWebView2.Stop();
         // Navigate away before wiping so the loaded mail page cannot repopulate its session.
@@ -189,3 +190,4 @@ public sealed class BrowserSession : IDisposable
         View.Dispose(); scripts.Clear();
     }
 }
+

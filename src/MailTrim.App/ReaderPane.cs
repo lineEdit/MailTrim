@@ -19,6 +19,7 @@ public sealed class ReaderPane : Grid
     private readonly List<ReaderLetter> letters = [];
     private readonly HashSet<string> knownLetters = [];
     private readonly CancellationTokenSource lifetime = new();
+    private bool restoring;
     private bool loading;
     private int scrollOffset;
     private readonly Dictionary<string, List<ReaderBlock>> cache = [];
@@ -68,7 +69,7 @@ public sealed class ReaderPane : Grid
             try { session.Cache.Clear(); cache.Clear(); notice.Text = "Кэш удалён."; } catch { notice.Text = "Не удалось очистить кэш."; }
         };
         notice.FontSize = 11; notice.MaxHeight = 32;
-        tools.Children.Add(notice); left.Children.Add(list);        list.SelectionChanged += async (_, _) => { if (list.SelectedItem is ReaderLetter letter) await Read(letter); };
+        tools.Children.Add(notice); left.Children.Add(list);        list.SelectionChanged += async (_, _) => { if (!restoring && list.SelectedItem is ReaderLetter letter) await Read(letter); };
         var right = new DockPanel(); SetColumn(right, 1); Children.Add(right);
         var open = new Button { Content = "Ответить / вложения ↗", Padding = new Thickness(8,4,8,4), HorizontalAlignment = HorizontalAlignment.Left };
         DockPanel.SetDock(open, Dock.Top); right.Children.Add(open); open.Click += (_, _) => OpenOriginal();
@@ -77,6 +78,20 @@ public sealed class ReaderPane : Grid
     }
     public async Task Start()
     {
+        if (session.ReaderState is { } position)
+        {
+            foreach (var item in position.Letters) AddLetter(item);
+            restoring = true;
+            list.SelectedItem = letters.FirstOrDefault(x => x.Url == position.SelectedUrl);
+            restoring = false;
+            if (list.SelectedItem is ReaderLetter selected) await Read(selected);
+            if (lifetime.IsCancellationRequested) return;
+            UpdateLayout();
+            FindScroll(list)?.ScrollToVerticalOffset(position.ListOffset);
+            ((ScrollViewer)((DockPanel)Children[1]).Children[1]).ScrollToVerticalOffset(position.BodyOffset);
+            notice.Text = $"Писем: {letters.Count}. Позиция восстановлена.";
+            return;
+        }
         List<ReaderLetter> saved;
         try { saved = await Task.Run(session.Cache.List); }
         catch { notice.Text = "Не удалось открыть кэш. Проверьте доступ к локальной папке."; return; }
@@ -107,8 +122,18 @@ public sealed class ReaderPane : Grid
         catch { notice.Text = "Загрузка прервана. Проверьте вход, сеть и место для кэша. Сохранённые письма остались."; }
         finally { batch.Dispose(); batch = null; loading = false; list.IsEnabled = true; cacheButton.Content = "Кэш всего ящика"; }
     }
-    public void Close() { lifetime.Cancel(); cache.Clear(); selectedLetter = null; letters.Clear(); knownLetters.Clear(); list.Items.Clear(); body.Children.Clear(); }
-    private async Task<T?> Extract<T>(string script) => JsonSerializer.Deserialize<T>(await session.View.CoreWebView2.ExecuteScriptAsync(script), FilterRules.Json);
+    public void Close()
+    {
+        session.ReaderState = new ReaderPosition(letters.ToArray(), selectedLetter?.Url, FindScroll(list)?.VerticalOffset ?? 0,
+            ((ScrollViewer)((DockPanel)Children[1]).Children[1]).VerticalOffset);
+        lifetime.Cancel(); cache.Clear(); selectedLetter = null; letters.Clear(); knownLetters.Clear(); list.Items.Clear(); body.Children.Clear(); }
+    private static ScrollViewer? FindScroll(DependencyObject node)
+    {
+        if (node is ScrollViewer scroll) return scroll;
+        for (int i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(node); i++)
+            if (FindScroll(System.Windows.Media.VisualTreeHelper.GetChild(node, i)) is { } found) return found;
+        return null;
+    }    private async Task<T?> Extract<T>(string script) => JsonSerializer.Deserialize<T>(await session.View.CoreWebView2.ExecuteScriptAsync(script), FilterRules.Json);
     private async Task LoadList(bool refresh, bool more = false)
     {
         if (loading || lifetime.IsCancellationRequested) return;
@@ -206,3 +231,4 @@ public sealed class ReaderPane : Grid
     }
     private void AddText(string text, double size = 16) => body.Children.Add(new TextBlock { Text = text, FontSize = size, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0,0,0,12) });
 }
+ public sealed record ReaderPosition(ReaderLetter[] Letters, string? SelectedUrl, double ListOffset, double BodyOffset);
