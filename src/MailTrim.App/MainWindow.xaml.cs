@@ -18,6 +18,7 @@ public partial class MainWindow : Window
     {
         this.store = store;
         InitializeComponent(); ApplyTheme();
+        VersionLabel.Text = "MailTrim " + typeof(MainWindow).Assembly.GetName().Version!.ToString(3);
         Loaded += async (_, _) =>
         {
             RefreshProfiles(store.Settings.ActiveProfile);
@@ -73,6 +74,14 @@ public partial class MainWindow : Window
         session.SetActive(true);
     }
     private async void Profiles_SelectionChanged(object sender, SelectionChangedEventArgs e) => await Run(ShowProfile);
+    private void ProfileActions_Click(object sender, RoutedEventArgs e)
+    {
+        RenameMenu.IsEnabled = Profiles.SelectedItem is AccountProfile;
+        ClearMenu.IsEnabled = RemoveMenu.IsEnabled = Current is not null;
+        ProfileActionsButton.ContextMenu.PlacementTarget = ProfileActionsButton;
+        ProfileActionsButton.ContextMenu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        ProfileActionsButton.ContextMenu.IsOpen = true;
+    }
     private void Back_Click(object sender, RoutedEventArgs e) { if (Current?.View.CanGoBack == true) Current.View.GoBack(); }
     private void Reload_Click(object sender, RoutedEventArgs e) { if (Current is { } s) s.View.Reload(); else _ = Run(ShowProfile); }
     private void Home_Click(object sender, RoutedEventArgs e) => Current?.View.CoreWebView2.Navigate("https://e.mail.ru/inbox/");
@@ -81,7 +90,8 @@ public partial class MainWindow : Window
         if (MessageBox.Show(this, "Фильтры будут переключены, а открытые страницы перезагружены. Сохраните незавершённые письма перед продолжением.", "Переключение фильтров", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;
         await Run(async () =>
         {
-            paused = !paused; PauseButton.Content = paused ? "Включить фильтры" : "Приостановить фильтры";
+            paused = !paused; PauseButton.Content = paused ? "Фильтры: выкл" : "Фильтры: вкл";
+            PauseButton.ToolTip = paused ? "Включить фильтры" : "Приостановить фильтры";
             foreach (var s in sessions.Values) await s.ApplySettings();
         });
     }
