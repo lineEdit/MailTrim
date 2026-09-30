@@ -82,7 +82,7 @@ public sealed class ReaderPane : Grid
             if (MessageBox.Show(Window.GetWindow(this), "Удалить локальные копии? Письма на сервере останутся.", "Очистка кэша", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
             try { session.Cache.Clear(); cache.Clear(); notice.Text = "Кэш удалён."; } catch { notice.Text = "Не удалось очистить кэш."; }
         };
-        notice.FontSize = 11; notice.MaxHeight = 32;
+        notice.FontSize = 11; notice.MaxHeight = 72;
         tools.Children.Add(notice); left.Children.Add(list);        list.SelectionChanged += async (_, _) => { if (!restoring && list.SelectedItem is ReaderLetter letter) await Read(letter); };
         var right = new DockPanel(); SetColumn(right, 2); Children.Add(right);
         var messageActions = new WrapPanel();
@@ -110,6 +110,11 @@ public sealed class ReaderPane : Grid
     {
         if (loading || lifetime.IsCancellationRequested) return;
         if (selectedLetter is not { } letter) { notice.Text = "Сначала выберите письмо."; return; }
+        if (action == ReaderAction.Reply)
+        {
+            notice.Text = "Ответ пока доступен в Mail.ru. Для перехода нажмите «Оригинал / вложения ↗». Режим чтения сохранён.";
+            return;
+        }
         if (action == ReaderAction.Delete && MessageBox.Show(Window.GetWindow(this),
             $"Удалить выбранное письмо через Mail.ru?\n\n{letter.Subject}\n\nИз корзины и нестандартных папок удаление доступно только вручную в оригинале.",
             "Удаление письма", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
@@ -121,20 +126,10 @@ public sealed class ReaderPane : Grid
             lifetime.Token.ThrowIfCancellationRequested();
             var result = await Extract<string>(ReaderActionScript.Create(action, letter.Url));
             lifetime.Token.ThrowIfCancellationRequested();
-            // Mail.ru owns confirmation dialogs, compose state and the final server outcome.
-            // Do not optimistically remove a cached message or report server success.
-            original();
-            if (result != "clicked")
-            {
-                var instruction = action switch
-                {
-                    ReaderAction.Reply => "Нажмите «Ответить» в открытом письме.",
-                    ReaderAction.MarkRead => "Открытие письма обычно отмечает его прочитанным. Проверьте состояние в Mail.ru.",
-                    ReaderAction.Archive => "Нажмите «В архив» в открытом письме.",
-                    _ => "Удаление автоматически не выполнено. Используйте кнопку Mail.ru, проверив выбранное письмо."
-                };
-                MessageBox.Show(Window.GetWindow(session.View), instruction, "Действие в Mail.ru");
-            }
+            // Keep the native reader and its position, including when the site changed.
+            notice.Text = result == "clicked"
+                ? "Команда передана Mail.ru. Если требуется подтверждение, откройте «Оригинал / вложения ↗». Кэш сохранён."
+                : "Кнопка Mail.ru не распознана — действие не подтверждено. Можно открыть «Оригинал / вложения ↗» вручную.";
         }
         catch (OperationCanceledException) { }
         catch { notice.Text = "Действие не подтверждено. Откройте оригинал и проверьте письмо."; }

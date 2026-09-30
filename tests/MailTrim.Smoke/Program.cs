@@ -184,7 +184,7 @@ internal static class Program
                 Check(unreadSnapshot.Ready && unreadSnapshot.Unread is null, "missing unread counter is unknown rather than zero");
                 await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('unread-test').setAttribute('data-unread-count','0')");
                 unreadSnapshot = System.Text.Json.JsonSerializer.Deserialize<MailboxStatusScript.SnapshotResult>(await a.View.CoreWebView2.ExecuteScriptAsync(MailboxStatusScript.Snapshot), FilterRules.Json)!;
-                Check(unreadSnapshot.Unread == 0, "explicit zero unread count is retained");                var pane = new ReaderPane(a, () => { }); host.Children.Add(pane); a.View.Visibility = Visibility.Hidden; b.View.Visibility = Visibility.Hidden;
+                Check(unreadSnapshot.Unread == 0, "explicit zero unread count is retained");                var originalRequests = 0; var pane = new ReaderPane(a, () => originalRequests++); host.Children.Add(pane); a.View.Visibility = Visibility.Hidden; b.View.Visibility = Visibility.Hidden;
                 await pane.Start();
                 var readerList = ((DockPanel)pane.Children[0]).Children.OfType<ListBox>().Single();
                 Check(readerList.Items.Count == 1, "native reader displays extracted list");
@@ -212,6 +212,11 @@ internal static class Program
                 Check(readerList.IsEnabled && readerNavigations == 0 && readerBody.Children.OfType<TextBlock>().Any(t => t.Text.Contains("Safe text")), "search result opens from cache without network");
                 await pane.SearchSaved(""); readerList.SelectedIndex = 0;
                 Check(readerList.Items.Count == 1, "clearing search restores original reader list");
+                var beforeReplyNavigation = readerNavigations;
+                await pane.PerformAction(ReaderAction.Reply);
+                Check(originalRequests == 0 && readerNavigations == beforeReplyNavigation && readerList.SelectedIndex == 0, "reply hint preserves reader without navigation or mode switch");
+                await pane.PerformAction(ReaderAction.Archive);
+                Check(originalRequests == 0 && readerList.SelectedIndex == 0 && readerBody.Children.OfType<TextBlock>().Any(t => t.Text.Contains("Safe text")), "unavailable action preserves reader and selected content without modal fallback");
                 pane.UpdateLayout();
                 var readerBitmap = new RenderTargetBitmap((int)pane.ActualWidth, (int)pane.ActualHeight, 96, 96, PixelFormats.Pbgra32);
                 readerBitmap.Render(pane); var readerEncoder = new PngBitmapEncoder(); readerEncoder.Frames.Add(BitmapFrame.Create(readerBitmap));
