@@ -71,6 +71,35 @@ internal static class Program
                 await WaitForScript(a, "getComputedStyle(document.getElementById('right-ad-column')).display === 'none'");
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('mail-list-main').getBoundingClientRect().width >= 895") == "true", "right column removed and mail list expands");
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("getComputedStyle(document.querySelector('.js-letter-list-item')).display !== 'none' && !document.querySelector('.js-letter-list-item [data-mailtrim-ad]')") == "true", "current Mail.ru message link preserved");
+                await a.View.CoreWebView2.ExecuteScriptAsync("""
+                    document.body.insertAdjacentHTML('beforeend', `<div id="space-test" style="position:fixed;bottom:0;left:0;width:600px;height:400px">
+                      <div id="reserved" style="height:302px"><div style="height:52px">Toolbar</div>
+                        <div id="mail-scroll" style="height:250px;overflow:auto"><div style="height:250px"><div class="thread">
+                          <div class="letter-body" style="height:800px"><div class="thread"><div id="body-footer" class="thread__footer">Message footer</div></div></div>
+                          <div class="letter__footer"><button id="mail-action">Reply</button></div>
+                          <div id="site-footer" class="thread__footer" style="height:72px">Site footer</div>
+                        </div></div></div>
+                      </div></div>`); void 0;
+                    """);
+                await WaitForScript(a, "Math.abs(document.getElementById('mail-scroll').getBoundingClientRect().bottom-innerHeight)<2");
+                Check(true, "reserved bottom area reclaimed by mail scroll viewport");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("getComputedStyle(document.getElementById('site-footer')).display === 'none' && getComputedStyle(document.getElementById('body-footer')).display !== 'none' && document.getElementById('mail-action').getBoundingClientRect().height > 0") == "true", "only site footer hidden; message footer and actions preserved");
+                await a.View.CoreWebView2.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, false, false));
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('reserved').getBoundingClientRect().height === 302 && document.getElementById('mail-scroll').getBoundingClientRect().height === 250 && getComputedStyle(document.getElementById('site-footer')).display !== 'none' && !document.querySelector('[data-mailtrim-viewport]')") == "true", "pause restores original layout and scroll height");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('space-test').remove()");
+                await a.View.CoreWebView2.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, true, false));
+                await a.View.CoreWebView2.ExecuteScriptAsync("""
+                    document.body.insertAdjacentHTML('beforeend', `<div id="list-space-test" style="position:fixed;bottom:0;left:0;width:600px;height:400px">
+                      <div style="height:52px">Toolbar</div><div class="letter-list__react" style="height:400px">
+                        <div style="height:250px"><div style="height:0"><div id="virtual-scroll" class="ReactVirtualized__List" style="height:250px;overflow:auto"><div style="height:2000px">Rows</div></div></div></div>
+                      </div></div>`); void 0;
+                    """);
+                await WaitForScript(a, "Math.abs(document.getElementById('virtual-scroll').getBoundingClientRect().bottom-innerHeight)<2");
+                Check(true, "virtualized inbox uses reclaimed bottom space");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('list-space-test').style.height='500px'; window.dispatchEvent(new Event('resize'))");
+                await WaitForScript(a, "Math.abs(document.getElementById('virtual-scroll').getBoundingClientRect().bottom-innerHeight)<2");
+                Check(true, "mail layout follows viewport resize");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('list-space-test').remove()");
                 var requestObserved = new TaskCompletionSource<bool>();
                 a.View.CoreWebView2.WebResourceRequested += (_, e) => { if (e.Request.Uri == "https://ad.mail.ru/banner") requestObserved.TrySetResult(e.Response?.StatusCode == 403); };
                 await a.View.CoreWebView2.ExecuteScriptAsync("fetch('https://ad.mail.ru/banner').catch(()=>{}); void 0");

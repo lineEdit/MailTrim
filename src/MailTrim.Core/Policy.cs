@@ -76,10 +76,75 @@ public static class CosmeticScript
           window.__mailtrimCleanup?.();
           const selectors = __SELECTORS__;
           const labeledAds = __LABELED__;
+          const compactLayout = __ENABLED__;
           const id = 'mailtrim-cosmetic-style';
           const protectedContent = '.letter-body, .letter__body, .letter-body__body, .compose-app, .compose, [contenteditable="true"], [role="textbox"], textarea, input';
           const marked = new Set();
-          let observer, timer;
+          const expanded = new Set();
+          const stretched = new Set();
+          const watched = new WeakSet();
+          let observer, resizeObserver, timer;
+          // Mail.ru's hashed content wrapper can retain a bottom ad reservation.
+          // Only expand a sole visible child aligned with a viewport-height parent.
+          const fitMailArea = () => {
+            for (const node of expanded) node.removeAttribute('data-mailtrim-fill');
+            expanded.clear();
+            for (const node of stretched) { node.removeAttribute('data-mailtrim-viewport'); node.style.removeProperty('--mailtrim-top'); }
+            stretched.clear();
+            if (!compactLayout) return;
+            const stretch = (box, top) => {
+              box.style.setProperty('--mailtrim-top', top + 'px');
+              box.setAttribute('data-mailtrim-viewport', 'true'); stretched.add(box);
+            };
+            for (const root of document.querySelectorAll('.thread, .letter-list__react')) {
+              if (root.closest(protectedContent)) continue;
+              // The virtualized list keeps the old banner height in its inner boxes,
+              // while its outer root already has the full (and overflowing) page height.
+              if (root.matches('.letter-list__react')) {
+                const list = root.querySelector('.ReactVirtualized__List');
+                if (list && !watched.has(list)) { resizeObserver?.observe(list); watched.add(list); }
+                const lr = list?.getBoundingClientRect(), pr = root.parentElement?.getBoundingClientRect();
+                let boundary = lr?.bottom;
+                for (let box = list?.parentElement; box && box !== root; box = box.parentElement) {
+                  const br = box.getBoundingClientRect();
+                  if (br.height > 100 && boundary !== undefined) boundary = Math.min(boundary, br.bottom);
+                }
+                if (lr && pr && lr.height > 100 && Math.abs(pr.bottom - innerHeight) < 3
+                    && innerHeight - boundary >= 32 && innerHeight - boundary <= 220) {
+                  const boxes = [];
+                  for (let box = list; box && box !== root.parentElement; box = box.parentElement) {
+                    const br = box.getBoundingClientRect();
+                    if (br.height >= 100 && (box === root || box === list || Math.abs(br.bottom - boundary) < 2)) boxes.push([box, br.top]);
+                  }
+                  for (const [box, top] of boxes) stretch(box, top);
+                  continue;
+                }
+              }
+              for (let node = root.parentElement, depth = 0; node && depth < 12; node = node.parentElement, depth++) {
+                const parent = node.parentElement;
+                if (!parent || node.matches('.application, body, html')) break;
+                const r = node.getBoundingClientRect(), p = parent.getBoundingClientRect();
+                const gap = p.bottom - r.bottom;
+                if (r.height < 100 || gap < 32 || gap > 220 || Math.abs(p.bottom - innerHeight) > 3
+                    || Math.abs(r.top - p.top) > 1 || Math.abs(r.width - p.width) > 2) continue;
+                if ([...parent.children].some(s => s !== node && s.getBoundingClientRect().height > 0)) continue;
+                const ps = getComputedStyle(parent);
+                if (parseFloat(ps.paddingTop) || parseFloat(ps.paddingBottom)) continue;
+                // Inner scroll boxes also have fixed heights computed by the site.
+                // Extend only boxes ending at the old reservation boundary, never the message body.
+                const boxes = [];
+                for (let box = root.parentElement; box && box !== node; box = box.parentElement) boxes.push(box);
+                if (root.matches('.letter-list__react')) boxes.push(...root.querySelectorAll('.ReactVirtualized__List'));
+                for (const box of boxes) {
+                  const br = box.getBoundingClientRect();
+                  if (br.height < 100 || Math.abs(br.bottom - r.bottom) > 2 || br.top < r.top) continue;
+                  stretch(box, br.top);
+                }
+                node.setAttribute('data-mailtrim-fill', 'true'); expanded.add(node);
+                break;
+              }
+            }
+          };
           const isAdLink = a => {
             try {
               const u = new URL(a.getAttribute('href'), location.href);
@@ -134,7 +199,8 @@ public static class CosmeticScript
             if (!style) { style = document.createElement('style'); style.id = id; document.documentElement.appendChild(style); }
             style.textContent = selectors.filter(s => { try { document.querySelector(s); return true; } catch { return false; } })
               .map(s => s + ' { display: none !important; }').join('\n')
-              + (labeledAds ? '\n[data-mailtrim-ad="true"] { display: none !important; }' : '');
+              + (labeledAds ? '\n[data-mailtrim-ad="true"] { display: none !important; }' : '')
+              + (compactLayout ? '\n[data-mailtrim-fill="true"] { height: 100% !important; }\n[data-mailtrim-viewport="true"] { height: calc(100vh - var(--mailtrim-top)) !important; }\n.thread > .thread__footer:not(.letter-body *, .letter__body *, .compose *, .compose-app *, [contenteditable="true"] *):not(:has(button, input, textarea, [contenteditable="true"])) { display: none !important; }' : '');
           };
           const scan = () => {
             timer = null;
@@ -143,21 +209,28 @@ public static class CosmeticScript
             for (const node of marked) node.removeAttribute('data-mailtrim-ad');
             marked.clear();
             if (labeledAds) hideLabeledAds();
+            fitMailArea();
           };
+          const schedule = () => { if (!timer) timer = setTimeout(scan, 100); };
           const start = () => {
+            resizeObserver = new ResizeObserver(schedule);
             apply(); scan();
-            observer = new MutationObserver(() => { if (!timer) timer = setTimeout(scan, 100); });
+            observer = new MutationObserver(schedule);
             observer.observe(document.documentElement, {childList:true, subtree:true, characterData:true});
+            window.addEventListener('resize', schedule);
           };
           window.__mailtrimCleanup = () => {
-            observer?.disconnect(); clearTimeout(timer);
+            observer?.disconnect(); resizeObserver?.disconnect(); clearTimeout(timer);
             document.removeEventListener('DOMContentLoaded', start);
+            window.removeEventListener('resize', schedule);
             for (const node of marked) node.removeAttribute('data-mailtrim-ad');
+            for (const node of expanded) node.removeAttribute('data-mailtrim-fill');
+            for (const node of stretched) { node.removeAttribute('data-mailtrim-viewport'); node.style.removeProperty('--mailtrim-top'); }
             document.getElementById(id)?.remove();
           };
           if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, {once:true});
           else start();
         })();
-        """.Replace("__SELECTORS__", JsonSerializer.Serialize(selectors)).Replace("__LABELED__", enabled && rules.RemoveLabeledAds ? "true" : "false");
+        """.Replace("__SELECTORS__", JsonSerializer.Serialize(selectors)).Replace("__LABELED__", enabled && rules.RemoveLabeledAds ? "true" : "false").Replace("__ENABLED__", enabled ? "true" : "false");
     }
 }
