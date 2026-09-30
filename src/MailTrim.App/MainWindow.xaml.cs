@@ -12,6 +12,7 @@ public partial class MainWindow : Window
     private readonly LocalStore store;
     private readonly Dictionary<Guid, BrowserSession> sessions = [];
     private ReaderPane? reader;
+    private bool readerMode;
     private bool paused;
     private bool busy;
     private BrowserSession? Current => Profiles.SelectedItem is AccountProfile p ? sessions.GetValueOrDefault(p.Id) : null;
@@ -39,6 +40,7 @@ public partial class MainWindow : Window
 
     private void CloseReader()
     {
+        readerMode = false;
         reader?.Close(); reader = null; ReaderHost.Children.Clear();
         ReaderHost.Visibility = Visibility.Collapsed; BrowserHost.Visibility = Visibility.Visible;
         ReaderButton.Content = "Только важное";
@@ -46,7 +48,12 @@ public partial class MainWindow : Window
     private async void Reader_Click(object sender, RoutedEventArgs e)
     {
         if (reader is not null) { reader.OpenOriginal(); return; }
+        await OpenReader();
+    }
+    private async Task OpenReader()
+    {
         if (Current?.View.CoreWebView2 is null) return;
+        readerMode = true;
         reader = new ReaderPane(Current, CloseReader);
         ReaderHost.Children.Add(reader); BrowserHost.Visibility = Visibility.Hidden;
         ReaderHost.Visibility = Visibility.Visible; ReaderButton.Content = "Оригинал";
@@ -76,7 +83,9 @@ public partial class MainWindow : Window
     }
     private async Task ShowProfile()
     {
+        var keepReaderMode = readerMode;
         CloseReader();
+        readerMode = keepReaderMode;
         foreach (var s in sessions.Values) s.SetActive(false);
         EmptyLabel.Visibility = Profiles.SelectedItem is AccountProfile ? Visibility.Collapsed : Visibility.Visible;
         if (Profiles.SelectedItem is not AccountProfile profile) return;
@@ -89,6 +98,7 @@ public partial class MainWindow : Window
             catch { sessions.Remove(profile.Id); BrowserHost.Children.Remove(session.View); session.Dispose(); throw; }
         }
         session.SetActive(true);
+        if (readerMode) await OpenReader();
     }
     private async void Profiles_SelectionChanged(object sender, SelectionChangedEventArgs e) => await Run(ShowProfile);
     private void ProfileActions_Click(object sender, RoutedEventArgs e)
@@ -165,5 +175,6 @@ public partial class MainWindow : Window
         for (int i = 0; i < keys.Length; i++) Application.Current.Resources[keys[i]] = new SolidColorBrush((Color)ColorConverter.ConvertFromString(colors[i]));
     }
 }
+
 
 

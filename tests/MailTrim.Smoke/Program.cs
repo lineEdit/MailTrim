@@ -148,7 +148,22 @@ internal static class Program
                 var browserHost = (Grid)shell.FindName("BrowserHost");
                 for (var i = 0; i < 100 && (!shell.IsEnabled || browserHost.Children.Count == 0); i++) await Task.Delay(100);
                 Check(shell.IsEnabled && browserHost.Children.Count == 1, "main window initializes with production resources");
-                // Capture the native WPF shell with the webview hidden, showing only synthetic test UI.
+                foreach (var profile in store.Settings.Profiles)
+                    new MessageCache(root, profile.Id).Save(new ReaderLetter("https://e.mail.ru/__mailtrim_reader", profile.Name, "Cached subject", "Preview", "Today"), [new ReaderBlock("Cached text", "")]);
+                var profiles = (ListBox)shell.FindName("Profiles");
+                var readerHost = (Grid)shell.FindName("ReaderHost");
+                var toggleReader = (Button)shell.FindName("ReaderButton");
+                toggleReader.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                for (int i = 0; i < 100 && (readerHost.Children.Count == 0 || ((DockPanel)((ReaderPane)readerHost.Children[0]).Children[0]).Children.OfType<ListBox>().Single().Items.Count == 0); i++) await Task.Delay(50);
+                foreach (var index in new[] { 1, 0 })
+                {
+                    profiles.SelectedIndex = index;
+                    for (int i = 0; i < 100 && !shell.IsEnabled; i++) await Task.Delay(50);
+                    Check(readerHost.Visibility == Visibility.Visible && readerHost.Children.Count == 1 && toggleReader.Content.ToString() == "Оригинал", "reader mode survives switching account tab");
+                    var activeList = ((DockPanel)((ReaderPane)readerHost.Children[0]).Children[0]).Children.OfType<ListBox>().Single();
+                    Check(activeList.Items.Cast<ReaderLetter>().Single().Sender == store.Settings.Profiles[index].Name, "switched reader shows only selected account cache");
+                }
+                toggleReader.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));                // Capture the native WPF shell with the webview hidden, showing only synthetic test UI.
                 browserHost.Visibility = Visibility.Hidden;
                 shell.UpdateLayout();
                 var bitmap = new RenderTargetBitmap((int)shell.ActualWidth, (int)shell.ActualHeight, 96, 96, PixelFormats.Pbgra32);
@@ -209,3 +224,4 @@ internal static class Program
         Console.WriteLine("PASS " + name);
     }
 }
+
