@@ -16,7 +16,7 @@ public static class UpdateChecker
         try
         {
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15), MaxResponseContentBufferSize = 1_000_000 };
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("MailTrim/0.1.0");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("MailTrim/0.1.1");
             var json = await client.GetStringAsync($"https://api.github.com/repos/{repo}/releases/latest");
             using var doc = JsonDocument.Parse(json);
             var tag = doc.RootElement.GetProperty("tag_name").GetString()?.TrimStart('v');

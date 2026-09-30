@@ -28,7 +28,15 @@ internal static class Program
             var sessions = new List<BrowserSession>();
             try
             {
+                Directory.CreateDirectory(root);
+                File.Copy(Path.Combine(AppContext.BaseDirectory, "rules", "legacy-0.1.0.json"), Path.Combine(root, "rules.json"));
                 var store = new LocalStore(root);
+                Check(store.Rules.Revision == "2026-09-30.2" && File.Exists(store.RulesPath + ".backup"), "unmodified legacy rules upgraded with backup");
+                var customRoot = Path.Combine(root, "custom-test"); Directory.CreateDirectory(customRoot);
+                var custom = FilterRules.Parse(store.DefaultRules); custom.Revision = "custom"; custom.HideSelectors = [".user-rule"];
+                File.WriteAllText(Path.Combine(customRoot, "rules.json"), System.Text.Json.JsonSerializer.Serialize(custom, FilterRules.Json));
+                var customStore = new LocalStore(customRoot);
+                Check(customStore.Rules.HideSelectors.SequenceEqual([".user-rule"]), "custom rules preserved");
                 var paused = false;
                 var a = new BrowserSession(store, window, _ => { }, () => paused, _ => { });
                 var b = new BrowserSession(store, window, _ => { }, () => paused, _ => { });
@@ -41,6 +49,20 @@ internal static class Program
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("getComputedStyle(document.querySelector('[data-testid=advertising]')).display") == "\"none\"", "cosmetics injected on trusted origin");
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("getComputedStyle(document.getElementById('message')).display") != "\"none\"", "message content remains visible");
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('message').textContent") == "\"Test message\"", "fixture loaded");
+                await WaitForScript(a, "getComputedStyle(document.getElementById('obfuscated-ad')).display === 'none'");
+                foreach (var element in new[] { "top-banner", "native-ad", "obfuscated-ad" })
+                    Check(await a.View.CoreWebView2.ExecuteScriptAsync($"getComputedStyle(document.getElementById('{element}')).display === 'none'") == "true", "ad placement hidden: " + element);
+                foreach (var element in new[] { "newsletter", "letter-body", "editor" })
+                    Check(await a.View.CoreWebView2.ExecuteScriptAsync($"getComputedStyle(document.getElementById('{element}')).display !== 'none' && !document.getElementById('{element}').querySelector('[data-mailtrim-ad]')") == "true", "legitimate content preserved: " + element);
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('dynamic').innerHTML = '<div id=late-ad role=listitem class=card><span>Реклама 6+</span><a href=https://r.mail.ru/test>Late ad</a></div>'");
+                await WaitForScript(a, "getComputedStyle(document.getElementById('late-ad')).display === 'none'");
+                Check(true, "late SPA ad hidden");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('late-ad').innerHTML = '<a href=/inbox/789><span>Реклама 6+</span>Real message replacing virtualized ad</a>'");
+                await WaitForScript(a, "getComputedStyle(document.getElementById('late-ad')).display !== 'none'");
+                Check(true, "virtualized ad reused as message is restored");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('mailtrim-cosmetic-style').remove()");
+                await WaitForScript(a, "!!document.getElementById('mailtrim-cosmetic-style')");
+                Check(true, "removed CSS restored after SPA update");
                 var requestObserved = new TaskCompletionSource<bool>();
                 a.View.CoreWebView2.WebResourceRequested += (_, e) => { if (e.Request.Uri == "https://ad.mail.ru/banner") requestObserved.TrySetResult(e.Response?.StatusCode == 403); };
                 await a.View.CoreWebView2.ExecuteScriptAsync("fetch('https://ad.mail.ru/banner').catch(()=>{}); void 0");
@@ -62,6 +84,7 @@ internal static class Program
                 Console.WriteLine("Navigating with paused settings…");
                 await Navigate(a, "https://e.mail.ru/__mailtrim_fixture");
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("getComputedStyle(document.querySelector('[data-testid=advertising]')).display") != "\"none\"", "pause restores hidden elements");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("document.querySelectorAll('[data-mailtrim-ad]').length") == "0", "pause disables semantic ad cleanup");
                 await a.ClearData();
                 Check(!(await cm.GetCookiesAsync("https://e.mail.ru/")).Any(c => c.Name == "mailtrim_test"), "clear data removes session cookie");
                 var sentinel = "private-email@example.org?token=secret";
@@ -92,7 +115,7 @@ internal static class Program
         session.View.CoreWebView2.WebResourceRequested += (_, e) =>
         {
             if (e.Request.Uri.EndsWith("/__mailtrim_fixture", StringComparison.Ordinal))
-                e.Response = session.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes("<html><head><title>MailTrim test</title></head><body><div data-testid='advertising'>Advertisement</div><main id='message'>Test message</main></body></html>")), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
+                e.Response = session.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "mail-ads.html")))), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
         };
     }
     private static async Task Navigate(BrowserSession session, string url)
@@ -102,6 +125,15 @@ internal static class Program
         session.View.CoreWebView2.NavigationCompleted += Handler;
         try { session.View.CoreWebView2.Navigate(url); await completion.Task.WaitAsync(TimeSpan.FromSeconds(20)); }
         finally { session.View.CoreWebView2.NavigationCompleted -= Handler; }
+    }
+    private static async Task WaitForScript(BrowserSession session, string expression)
+    {
+        for (var i = 0; i < 50; i++)
+        {
+            if (await session.View.CoreWebView2.ExecuteScriptAsync(expression) == "true") return;
+            await Task.Delay(100);
+        }
+        throw new InvalidOperationException("Timed out waiting for fixture condition: " + expression);
     }
     private static void Check(bool value, string name)
     {

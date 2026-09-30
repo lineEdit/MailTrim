@@ -17,6 +17,14 @@ Check(!rules.ShouldBlock("https://safe.ads.example.com/x", true), "allow wins");
 Check(!rules.ShouldBlock("https://e.mail.ru/x", true), "mail protected");
 Check(!rules.ShouldBlock("https://account.mail.ru/x", true), "auth protected");
 Check(!rules.ShouldBlock("https://ads.example.com/x", false), "pause bypass");
+rules.BlockedMailPathPrefixes = ["/api-proxy/rb-mimic/"];
+Check(rules.ShouldBlock("https://e.mail.ru/api-proxy/rb-mimic/banner", true), "first-party ad proxy blocked");
+Check(!rules.ShouldBlock("https://e.mail.ru/api/v1/messages", true), "message API protected");
+Check(!rules.ShouldBlock("https://account.mail.ru/api-proxy/rb-mimic/banner", true), "auth remains protected from proxy rules");
+Check(!rules.ShouldBlock("https://e.mail.ru/api-proxy/rb-mimic-safe/banner", true), "ad proxy path boundary");
+Check(!rules.ShouldBlock("https://e.mail.ru/api-proxy/rb-mimic/banner", false), "pause bypasses ad proxy");
+rules.AllowedDomains.Add("e.mail.ru");
+Check(!rules.ShouldBlock("https://e.mail.ru/api-proxy/rb-mimic/banner", true), "explicit allow wins over ad proxy");
 foreach (var json in new[] { "null", "{}", "{\"schemaVersion\":2}", "{\"blockedDomains\":[\"*.example.com\"]}", "{\"hideSelectors\":[\"body { color:red }\"]}", "{\"allowedDomains\":null}" })
 {
     if (json == "{}") { Check(FilterRules.Parse(json).SchemaVersion == 1, "empty lists default"); continue; }

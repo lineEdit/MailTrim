@@ -27,6 +27,8 @@ public sealed class FilterRules
     public List<string> AllowedDomains { get; set; } = [];
     public List<string> HideSelectors { get; set; } = [];
     public List<string> AggressiveSelectors { get; set; } = [];
+    public List<string> BlockedMailPathPrefixes { get; set; } = [];
+    public bool RemoveLabeledAds { get; set; } = true;
 
     public static readonly JsonSerializerOptions Json = new() { WriteIndented = true, PropertyNameCaseInsensitive = true };
     public static FilterRules Parse(string json)
@@ -35,9 +37,9 @@ public sealed class FilterRules
         var r = JsonSerializer.Deserialize<FilterRules>(json, Json) ?? throw new FormatException("Пустые правила.");
         if (r.SchemaVersion != 1 || string.IsNullOrWhiteSpace(r.Revision) || r.Revision.Length > 80)
             throw new FormatException("Неподдерживаемая версия или некорректная ревизия правил.");
-        if (r.BlockedDomains is null || r.AllowedDomains is null || r.HideSelectors is null || r.AggressiveSelectors is null)
+        if (r.BlockedDomains is null || r.AllowedDomains is null || r.HideSelectors is null || r.AggressiveSelectors is null || r.BlockedMailPathPrefixes is null)
             throw new FormatException("Списки правил не могут быть null.");
-        foreach (var list in new[] { r.BlockedDomains, r.AllowedDomains, r.HideSelectors, r.AggressiveSelectors })
+        foreach (var list in new[] { r.BlockedDomains, r.AllowedDomains, r.HideSelectors, r.AggressiveSelectors, r.BlockedMailPathPrefixes })
             if (list.Count > 500) throw new FormatException("Не более 500 элементов в списке.");
         foreach (var d in r.BlockedDomains.Concat(r.AllowedDomains))
             if (d is null || d.Length > 253 || !Regex.IsMatch(d, @"^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$", RegexOptions.CultureInvariant))
@@ -45,44 +47,100 @@ public sealed class FilterRules
         foreach (var s in r.HideSelectors.Concat(r.AggressiveSelectors))
             if (string.IsNullOrWhiteSpace(s) || s.Length > 500 || s.IndexOfAny(['{', '}', ';', '@', '\\', '\n', '\r']) >= 0 || s.Contains("/*"))
                 throw new FormatException("Разрешены только CSS-селекторы, не CSS-декларации и не JavaScript.");
+        foreach (var path in r.BlockedMailPathPrefixes)
+            if (path is null || path.Length > 200 || !Regex.IsMatch(path, @"^/api-proxy/[a-z0-9_-]+/$", RegexOptions.CultureInvariant))
+                throw new FormatException("Рекламные пути должны иметь вид /api-proxy/имя/; общие API почты не блокируются.");
         return r;
     }
 
     public bool ShouldBlock(string url, bool enabled)
     {
         if (!enabled || !Uri.TryCreate(url, UriKind.Absolute, out var u) || u.Scheme is not ("http" or "https")) return false;
-        if (NavigationPolicy.IsInternal(url)) return false; // Login and mail endpoints cannot be accidentally denied.
         var host = u.IdnHost;
-        return !AllowedDomains.Any(d => NavigationPolicy.HostMatches(host, d))
-            && BlockedDomains.Any(d => NavigationPolicy.HostMatches(host, d));
+        if (AllowedDomains.Any(d => NavigationPolicy.HostMatches(host, d))) return false;
+        if (NavigationPolicy.IsMail(url) && BlockedMailPathPrefixes.Any(p => u.AbsolutePath.StartsWith(p, StringComparison.Ordinal))) return true;
+        if (NavigationPolicy.IsInternal(url)) return false; // Only explicit ad proxy paths can override the mail host protection.
+        return BlockedDomains.Any(d => NavigationPolicy.HostMatches(host, d));
     }
 }
 
 public static class CosmeticScript
 {
-    // Declarative rules only. No remote executable JS; no access to messages or credentials.
+    // Declarative rules only. No remote executable JS or native/network bridge.
     public static string Create(FilterRules rules, bool enabled, bool aggressive)
     {
         var selectors = enabled ? rules.HideSelectors.Concat(aggressive ? rules.AggressiveSelectors : []).ToArray() : [];
         return """
         (() => {
           if (window.top !== window || location.origin !== 'https://e.mail.ru') return;
+          window.__mailtrimCleanup?.();
           const selectors = __SELECTORS__;
+          const labeledAds = __LABELED__;
           const id = 'mailtrim-cosmetic-style';
+          const protectedContent = '.letter-body, .letter__body, .letter-body__body, .compose-app, .compose, [contenteditable="true"], [role="textbox"], textarea, input';
+          const marked = new Set();
+          let observer, timer;
+          const isAdLink = a => {
+            try {
+              const u = new URL(a.getAttribute('href'), location.href);
+              return ['ad.mail.ru','r.mail.ru','rs.mail.ru','t.mail.ru'].includes(u.hostname)
+                || (u.origin === location.origin && u.pathname.startsWith('/api-proxy/rb-mimic/'));
+            } catch { return false; }
+          };
+          const hasMailLink = node => [node, ...node.querySelectorAll('a[href]')].some(a => {
+            if (!a.matches('a[href]')) return false;
+            try { const u = new URL(a.getAttribute('href'), location.href); return u.origin === location.origin && !isAdLink(a); }
+            catch { return false; }
+          });
+          const hideLabeledAds = () => {
+            // Examine only short, standalone ad labels. Never match an entire row's text or a subject substring.
+            for (const label of document.querySelectorAll('span, small, [aria-label="Реклама"], [aria-label="Advertisement"]')) {
+              if (label.closest(protectedContent) || label.childElementCount > 1) continue;
+              const text = [...label.childNodes].filter(n => n.nodeType === Node.TEXT_NODE).map(n => n.textContent).join('').trim();
+              if (!/^(?:реклама|advertisement|sponsored)(?:\s*\d{1,2}\+)?$/iu.test(text)) continue;
+              let node = label.parentElement;
+              for (let depth = 0; node && depth < 6; depth++, node = node.parentElement) {
+                if (node.matches('body, main, #app-canvas, [role="main"], [role="list"], .llct, .letter-list') || node.closest(protectedContent)) break;
+                if (hasMailLink(node)) break;
+                const links = [node, ...node.querySelectorAll('a[href]')].filter(a => a.matches('a[href]'));
+                const row = node.matches('.llc, .letter-list-item, [role="listitem"], .letter-list-item-adv, .letter-list-item-adv__container');
+                const adLink = links.some(isAdLink);
+                if ((row || adLink) && node.getBoundingClientRect().height <= 360 && node.getBoundingClientRect().width >= 180) {
+                  node.setAttribute('data-mailtrim-ad', 'true'); marked.add(node); break;
+                }
+              }
+            }
+          };
           const apply = () => {
             if (!document.documentElement) return;
             let style = document.getElementById(id);
             if (!style) { style = document.createElement('style'); style.id = id; document.documentElement.appendChild(style); }
             style.textContent = selectors.filter(s => { try { document.querySelector(s); return true; } catch { return false; } })
-              .map(s => s + ' { display: none !important; }').join('\n');
+              .map(s => s + ' { display: none !important; }').join('\n')
+              + (labeledAds ? '\n[data-mailtrim-ad="true"] { display: none !important; }' : '');
           };
-          apply();
-          document.addEventListener('DOMContentLoaded', apply, {once:true});
-          // CSS automatically covers newly added SPA nodes. Reattach only when the site removes the style.
-          if (document.documentElement) new MutationObserver(() => {
+          const scan = () => {
+            timer = null;
             if (!document.getElementById(id)) apply();
-          }).observe(document.documentElement, {childList:true});
+            // Virtualized rows may be reused for real messages: undo our markers before reevaluating.
+            for (const node of marked) node.removeAttribute('data-mailtrim-ad');
+            marked.clear();
+            if (labeledAds) hideLabeledAds();
+          };
+          const start = () => {
+            apply(); scan();
+            observer = new MutationObserver(() => { if (!timer) timer = setTimeout(scan, 100); });
+            observer.observe(document.documentElement, {childList:true, subtree:true, characterData:true});
+          };
+          window.__mailtrimCleanup = () => {
+            observer?.disconnect(); clearTimeout(timer);
+            document.removeEventListener('DOMContentLoaded', start);
+            for (const node of marked) node.removeAttribute('data-mailtrim-ad');
+            document.getElementById(id)?.remove();
+          };
+          if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, {once:true});
+          else start();
         })();
-        """.Replace("__SELECTORS__", JsonSerializer.Serialize(selectors));
+        """.Replace("__SELECTORS__", JsonSerializer.Serialize(selectors)).Replace("__LABELED__", enabled && rules.RemoveLabeledAds ? "true" : "false");
     }
 }

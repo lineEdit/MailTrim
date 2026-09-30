@@ -1,8 +1,19 @@
 {
   "schemaVersion": 1,
-  "revision": "2026-09-30.1",
+  "revision": "2026-09-30.2",
+  "blockedMailPathPrefixes": ["/api-proxy/rb-mimic/"],
+  "removeLabeledAds": true,
   "blockedDomains": ["ad.mail.ru", "adfox.ru", "an.yandex.ru", "mc.yandex.ru", "top.mail.ru", "top-fwz1.mail.ru", "rs.mail.ru", "doubleclick.net", "googlesyndication.com", "google-analytics.com"],
   "allowedDomains": [],
-  "hideSelectors": ["[data-testid=\"advertising\"]", "[data-testid=\"advertisement\"]", ".mailru-ads", "[data-ad-slot]", "iframe[src*=\"ad.mail.ru\"]", "iframe[src*=\"adfox.ru\"]"],
+  "hideSelectors": [
+    "[data-testid=\"advertising\"]", "[data-testid=\"advertisement\"]", ".mailru-ads", "[data-ad-slot]",
+    "iframe[src*=\"ad.mail.ru\"]", "iframe[src*=\"adfox.ru\"]",
+    ".letter-list-item-adv", ".letter-list-item-adv__container",
+    ".js-banner-wrapper-container:has(> [class^=\"trg-b-\"])",
+    ".layout__column_right-indented",
+    "#app-canvas .layout__overflow-container > .advert-column",
+    "#app-canvas .layout__overflow-container > .slot",
+    "#message-sent__rb-center-container", ".layer-sent-page__banner"
+  ],
   "aggressiveSelectors": ["[data-testid=\"promo\"]", "[data-testid=\"recommendations\"]", "[data-testid=\"news\"]", "[class*=\"ph-project-promo\"]", "[class*=\"mail-space-promo\"]"]
 }

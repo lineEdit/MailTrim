@@ -22,6 +22,7 @@ public partial class MainWindow : Window
         {
             RefreshProfiles(store.Settings.ActiveProfile);
             if (store.RulesRecovered) MessageBox.Show(this, "Локальные правила повреждены. Временно используются встроенные. Исправьте или сбросьте их в настройках.", "Правила");
+            if (store.RulesUpgradeAvailable) MessageBox.Show(this, "Доступны новые фильтры рекламы. Ваш изменённый набор сохранён. Чтобы использовать новый набор: Настройки → Правила → Встроенные правила → Сохранить и перезагрузить. Это заменит ваши изменения правил.", "Обновление фильтров");
             if (store.Settings.CheckUpdatesOnStartup) await UpdateChecker.Check(this, store, true);
         };
         Closed += (_, _) => { foreach (var session in sessions.Values) session.Dispose(); store.Log("app_closed"); };

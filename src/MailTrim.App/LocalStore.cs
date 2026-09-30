@@ -13,6 +13,7 @@ public sealed class LocalStore
     public AppSettings Settings { get; }
     public FilterRules Rules { get; private set; }
     public bool RulesRecovered { get; }
+    public bool RulesUpgradeAvailable { get; }
     public string DefaultRules => File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "rules", "default.json"));
 
     public LocalStore(string? isolatedDataRoot = null)
@@ -33,7 +34,19 @@ public sealed class LocalStore
             throw new FormatException("Profiles");
         if (Settings.Theme is not ("Light" or "Dark" or "System")) Settings.Theme = "System";
         if (!File.Exists(RulesPath)) AtomicWrite(RulesPath, DefaultRules);
-        try { Rules = FilterRules.Parse(File.ReadAllText(RulesPath)); }
+        try
+        {
+            Rules = FilterRules.Parse(File.ReadAllText(RulesPath));
+            var legacy = FilterRules.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "rules", "legacy-0.1.0.json")));
+            if (JsonSerializer.Serialize(Rules, FilterRules.Json) == JsonSerializer.Serialize(legacy, FilterRules.Json))
+            {
+                AtomicWrite(RulesPath + ".backup", File.ReadAllText(RulesPath));
+                Rules = FilterRules.Parse(DefaultRules);
+                AtomicWrite(RulesPath, JsonSerializer.Serialize(Rules, FilterRules.Json));
+                Log("bundled_rules_upgraded");
+            }
+            else if (Rules.Revision == legacy.Revision) RulesUpgradeAvailable = true;
+        }
         catch (Exception ex) when (ex is FormatException or JsonException)
         {
             Rules = FilterRules.Parse(DefaultRules);
