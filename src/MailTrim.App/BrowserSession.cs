@@ -9,6 +9,7 @@ namespace MailTrim.App;
 public sealed class BrowserSession : IDisposable
 {
     public WebView2 View { get; } = new();
+    public MessageCache Cache { get; private set; } = null!;
     private readonly LocalStore store;
     private readonly Window owner;
     private readonly Action<string> status;
@@ -32,6 +33,7 @@ public sealed class BrowserSession : IDisposable
 
     public async Task Initialize(Guid profile)
     {
+        Cache = new MessageCache(store.Root, profile);
         environment = await CoreWebView2Environment.CreateAsync(null, store.ProfilePath(profile));
         if (disposed) return;
         await View.EnsureCoreWebView2Async(environment);
@@ -154,6 +156,7 @@ public sealed class BrowserSession : IDisposable
     }
     public async Task ClearData()
     {
+        Cache.Clear();
         foreach (var p in popups.ToArray()) p.Window.Close();
         View.CoreWebView2.Stop();
         // Navigate away before wiping so the loaded mail page cannot repopulate its session.

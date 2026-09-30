@@ -119,8 +119,31 @@ internal static class Program
                 a.View.CoreWebView2.NavigationStarting += (_, _) => readerNavigations++;
                 readerList.SelectedIndex = -1; readerList.SelectedIndex = 0;
                 Check(readerList.IsEnabled && readerNavigations == 0 && readerBody.Children.OfType<TextBlock>().Any(t => t.Text.Contains("Safe text")), "cached letter reopens synchronously without network navigation");
-                pane.Close(); Check(readerList.Items.Count == 0 && readerBody.Children.Count == 0, "reader clears message memory on close");
-                host.Children.Remove(pane);                var shell = new MainWindow(store) { Left = -20000, Top = -20000, WindowStartupLocation = WindowStartupLocation.Manual, ShowActivated = false, ShowInTaskbar = false };
+                pane.UpdateLayout();
+                var readerBitmap = new RenderTargetBitmap((int)pane.ActualWidth, (int)pane.ActualHeight, 96, 96, PixelFormats.Pbgra32);
+                readerBitmap.Render(pane); var readerEncoder = new PngBitmapEncoder(); readerEncoder.Frames.Add(BitmapFrame.Create(readerBitmap));
+                using (var capture = File.Create(Path.Combine(root, "reader-preview.png"))) readerEncoder.Save(capture);                pane.Close(); Check(readerList.Items.Count == 0 && readerBody.Children.Count == 0, "reader clears message memory on close");
+                var reopenedCache = new MessageCache(root, id);
+                Check(reopenedCache.Get(readerRows[0].Url)?.Any(x => x.Text.Contains("Safe text")) == true, "encrypted cache survives a new cache instance");
+                var cachedFile = Directory.GetFiles(Path.Combine(root, "ReaderCache", id.ToString("N")), "*.bin").Single();
+                Check(!Encoding.UTF8.GetString(File.ReadAllBytes(cachedFile)).Contains("Safe text"), "cache does not contain plaintext mail");
+                var otherId = Guid.NewGuid(); var otherDir = Path.Combine(root, "ReaderCache", otherId.ToString("N")); Directory.CreateDirectory(otherDir);
+                File.Copy(cachedFile, Path.Combine(otherDir, Path.GetFileName(cachedFile)));
+                Check(new MessageCache(root, otherId).Get(readerRows[0].Url) is null, "cache cannot be decrypted as a different mailbox profile");
+                var resumed = new ReaderPane(a, () => { }); host.Children.Add(resumed); await resumed.Start();
+                Check(((DockPanel)resumed.Children[0]).Children.OfType<ListBox>().Single().Items.Count == 1, "reader restores cached list after reopening");
+                resumed.Close(); host.Children.Remove(resumed);
+                Console.WriteLine("Checking whole-mailbox scan with synthetic folders…");
+                var batchResult = await new ReaderSource(a).CacheMailbox(_ => { }, _ => { }, CancellationToken.None);
+                Check(batchResult.Folders == 7 && batchResult.Saved == 2 && batchResult.Failed == 0 && batchResult.UncertainFolders == 0, "batch scans default and discovered folders to the end and persists messages");
+                using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
+                bool stopped = false;
+                try { await new ReaderSource(a).CacheMailbox(_ => { }, _ => { }, cancelled.Token); } catch (OperationCanceledException) { stopped = true; }
+                Check(stopped && reopenedCache.List().Count == 2, "cancelling batch preserves saved messages");
+                await a.ClearData();
+                Check(reopenedCache.List().Count == 0, "clearing profile also clears encrypted reader cache");                host.Children.Remove(pane);
+                store.Settings.Profiles.Add(new AccountProfile { Name = "Рабочий ящик" });
+                var shell = new MainWindow(store) { Width = 1080, Left = -20000, Top = -20000, WindowStartupLocation = WindowStartupLocation.Manual, ShowActivated = false, ShowInTaskbar = false };
                 shell.Show();
                 var browserHost = (Grid)shell.FindName("BrowserHost");
                 for (var i = 0; i < 100 && (!shell.IsEnabled || browserHost.Children.Count == 0); i++) await Task.Delay(100);
@@ -144,12 +167,18 @@ internal static class Program
     {
         session.View.CoreWebView2.WebResourceRequested += async (_, e) =>
         {
-            if (e.Request.Uri.EndsWith("/__mailtrim_slow_image", StringComparison.Ordinal))
+            var fixturePath = new Uri(e.Request.Uri).AbsolutePath;
+            if (new[] { "/inbox/", "/sent/", "/archive/", "/drafts/", "/spam/", "/trash/", "/folder/custom/" }.Contains(fixturePath))
+            {
+                var messagePath = fixturePath == "/folder/custom/" ? "__mailtrim_reader_second" : "__mailtrim_reader";
+                var html = "<html><body><a href='/folder/custom/'>Custom</a><div style='height:80px;overflow-y:auto'><a class='js-letter-list-item' href='/" + messagePath + "'><span>Sender</span><span>Subject</span><span>Preview</span><span>Today</span></a><div style='height:200px'></div></div></body></html>";
+                e.Response = session.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(html)), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
+            }            if (e.Request.Uri.EndsWith("/__mailtrim_slow_image", StringComparison.Ordinal))
             {
                 using var deferred = e.GetDeferral();
                 await Task.Delay(3500);
                 e.Response = session.View.CoreWebView2.Environment.CreateWebResourceResponse(null, 404, "Not found", "Cache-Control: no-store");
-            }            if (e.Request.Uri.EndsWith("/__mailtrim_reader", StringComparison.Ordinal))
+            }            if (fixturePath is "/__mailtrim_reader" or "/__mailtrim_reader_second")
                 e.Response = session.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes("""
                 <html><body><a class="js-letter-list-item" href="https://e.mail.ru/__mailtrim_reader"><span title="sender">Sender</span><span>Subject</span><span>Preview</span><span>12:00</span></a>
                 <script>history.replaceState(null,"",location.pathname+"?canonical=1#message");</script><div class="js-letter-list-item">Advertisement</div><div class="letter-body__body"><p>Safe text &lt;script&gt;</p><img width="1" height="1" src="https://e.mail.ru/__mailtrim_slow_image"><div hidden>Hidden text</div><script type="text/plain">excluded script</script><img src="data:text/plain,bad"><img src="javascript:void(0)"></div></body></html>
@@ -180,6 +209,3 @@ internal static class Program
         Console.WriteLine("PASS " + name);
     }
 }
-
-
-

@@ -19,3 +19,4 @@ MailTrim использует только официальный веб-инт�
 Основание решений: [Microsoft WebView2 security](https://learn.microsoft.com/microsoft-edge/webview2/concepts/security), [user data folders](https://learn.microsoft.com/microsoft-edge/webview2/concepts/user-data-folder).
 
 Для уязвимостей используйте private vulnerability reporting репозитория, если оно включено. Не публикуйте токены, данные сессии или персональные письма.
+- С версии 0.3.0 отдельный кэш чтения сохраняет текст, заголовки и ссылки на изображения через Windows DPAPI CurrentUser. GUID профиля используется как дополнительная привязка. Имена файлов — SHA-256 URL. Запись атомарная через зашифрованный временный файл; очистка сессии удаляет этот кэш. Он не синхронизирует удаление писем на сервере и не защищает от программ того же пользователя Windows.

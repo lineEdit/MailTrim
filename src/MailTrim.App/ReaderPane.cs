@@ -8,7 +8,7 @@ using MailTrim.Core;
 
 namespace MailTrim.App;
 
-/// <summary>Native, memory-only reading view. Untrusted mail never becomes executable markup.</summary>
+/// <summary>Native reading view with a profile-scoped encrypted cache. Mail never becomes executable markup.</summary>
 public sealed class ReaderPane : Grid
 {
     private readonly BrowserSession session;
@@ -17,13 +17,17 @@ public sealed class ReaderPane : Grid
     private readonly StackPanel body = new() { Margin = new Thickness(26), MaxWidth = 850 };
     private readonly TextBlock notice = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(8) };
     private readonly List<ReaderLetter> letters = [];
+    private readonly HashSet<string> knownLetters = [];
     private readonly CancellationTokenSource lifetime = new();
     private bool loading;
     private int scrollOffset;
     private readonly Dictionary<string, List<ReaderBlock>> cache = [];
     private ReaderLetter? selectedLetter;
+    private CancellationTokenSource? batch;
+    private readonly Button cacheButton = new() { Content = "Кэш всего ящика", Padding = new Thickness(8,4,8,4) };
     public void OpenOriginal()
     {
+        batch?.Cancel();
         if (selectedLetter is { } letter && session.View.CoreWebView2.Source != letter.Url)
             session.View.CoreWebView2.Navigate(letter.Url);
         original();
@@ -34,24 +38,76 @@ public sealed class ReaderPane : Grid
         SetResourceReference(BackgroundProperty, "Panel");
         list.SetResourceReference(Control.BackgroundProperty, "Panel"); list.SetResourceReference(Control.ForegroundProperty, "Ink");
         ScrollViewer.SetHorizontalScrollBarVisibility(list, ScrollBarVisibility.Disabled);
-        ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(310) });
+        VirtualizingPanel.SetIsVirtualizing(list, true);
+        VirtualizingPanel.SetVirtualizationMode(list, VirtualizationMode.Recycling);
+        ScrollViewer.SetCanContentScroll(list, true);
+        list.ItemTemplate = (DataTemplate)System.Windows.Markup.XamlReader.Parse("""
+        <DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+         <StackPanel Margin="6" Width="250">
+          <TextBlock FontWeight="SemiBold" TextTrimming="CharacterEllipsis"><TextBlock.Text><MultiBinding StringFormat="{}{0} · {1}"><Binding Path="Sender"/><Binding Path="Date"/></MultiBinding></TextBlock.Text></TextBlock>
+          <TextBlock Text="{Binding Subject}" TextWrapping="Wrap" MaxHeight="40" Margin="0,3,0,3"/>
+          <TextBlock Text="{Binding Preview}" TextTrimming="CharacterEllipsis" Opacity="0.65"/>
+         </StackPanel>
+        </DataTemplate>
+        """);        ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(310) });
         ColumnDefinitions.Add(new ColumnDefinition());
         var left = new DockPanel(); Children.Add(left);
         var tools = new StackPanel(); DockPanel.SetDock(tools, Dock.Top); left.Children.Add(tools);
-        var refresh = new Button { Content = "Обновить список" }; tools.Children.Add(refresh);
+        var actions = new StackPanel { Orientation = Orientation.Horizontal };
+        tools.Children.Add(actions);
+        var refresh = new Button { Content = "↻", ToolTip = "Обновить список", Padding = new Thickness(8,4,8,4) }; actions.Children.Add(refresh);
         refresh.Click += async (_, _) => await LoadList(true);
-        var more = new Button { Content = "Ещё письма" }; tools.Children.Add(more);
+        var more = new Button { Content = "+", ToolTip = "Ещё письма", Padding = new Thickness(8,4,8,4) }; actions.Children.Add(more);
         more.Click += async (_, _) => await LoadList(false, true);
-        tools.Children.Add(notice); left.Children.Add(list);
-        list.SelectionChanged += async (_, _) => { if (list.SelectedItem is ListBoxItem { Tag: ReaderLetter letter }) await Read(letter); };
+        actions.Children.Add(cacheButton); cacheButton.Click += async (_, _) => await RequestCache();
+        var clear = new MenuItem { Header = "Удалить зашифрованный кэш этого ящика" };
+        cacheButton.ContextMenu = new ContextMenu(); cacheButton.ContextMenu.Items.Add(clear);
+        clear.Click += (_, _) => {
+            if (loading) return;
+            if (MessageBox.Show(Window.GetWindow(this), "Удалить локальные копии? Письма на сервере останутся.", "Очистка кэша", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
+            try { session.Cache.Clear(); cache.Clear(); notice.Text = "Кэш удалён."; } catch { notice.Text = "Не удалось очистить кэш."; }
+        };
+        notice.FontSize = 11; notice.MaxHeight = 32;
+        tools.Children.Add(notice); left.Children.Add(list);        list.SelectionChanged += async (_, _) => { if (list.SelectedItem is ReaderLetter letter) await Read(letter); };
         var right = new DockPanel(); SetColumn(right, 1); Children.Add(right);
-        var open = new Button { Content = "Открыть в Mail.ru · ответить / вложения", HorizontalAlignment = HorizontalAlignment.Left };
+        var open = new Button { Content = "Ответить / вложения ↗", Padding = new Thickness(8,4,8,4), HorizontalAlignment = HorizontalAlignment.Left };
         DockPanel.SetDock(open, Dock.Top); right.Children.Add(open); open.Click += (_, _) => OpenOriginal();
         right.Children.Add(new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
         AddText("Выберите письмо слева. Ответы, ссылки и вложения доступны в оригинале.");
     }
-    public async Task Start() => await LoadList(false);
-    public void Close() { lifetime.Cancel(); cache.Clear(); selectedLetter = null; letters.Clear(); list.Items.Clear(); body.Children.Clear(); }
+    public async Task Start()
+    {
+        List<ReaderLetter> saved;
+        try { saved = await Task.Run(session.Cache.List); }
+        catch { notice.Text = "Не удалось открыть кэш. Проверьте доступ к локальной папке."; return; }
+        if (lifetime.IsCancellationRequested) return;
+        foreach (var letter in saved) AddLetter(letter);
+        if (saved.Count > 0) { notice.Text = $"В кэше: {saved.Count}. ↻ — проверить новые письма."; return; }
+        await LoadList(false);
+    }
+    private void AddLetter(ReaderLetter letter)
+    {
+        if (!NavigationPolicy.IsMail(letter.Url) || !knownLetters.Add(letter.Url)) return;
+        letters.Add(letter); list.Items.Add(letter);
+    }    private async Task RequestCache()
+    {
+        if (batch is not null) { batch.Cancel(); return; }
+        if (loading) return;
+        if (MessageBox.Show(Window.GetWindow(this), "Заранее загрузить весь ящик через Mail.ru?\n\nПриложение обойдёт стандартные и доступные пользовательские папки, включая спам и корзину. Открытие писем может пометить их прочитанными.\n\nТекст и ссылки на картинки сохранятся на этом компьютере в кэше, зашифрованном для вашей учётной записи Windows. Картинки и вложения автоматически не скачиваются. Лимит — 512 МБ на профиль. Существующий кэш будет дополнен.\n\nЗагрузка может занять долгое время. Её можно остановить; сохранённое останется. Начать?", "Кэш всего ящика", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+        batch = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        loading = true; list.IsEnabled = false; cacheButton.Content = "Остановить";
+        try
+        {
+            var result = await new ReaderSource(session).CacheMailbox(text => notice.Text = text, AddLetter, batch.Token);
+            notice.Text = $"Сохранено: {result.Saved}, ошибок: {result.Failed}.";
+            if (!lifetime.IsCancellationRequested)
+                MessageBox.Show(Window.GetWindow(this), $"В кэше: {result.Saved} писем. Ошибок чтения: {result.Failed}.\nОбработано папок: {result.Folders}.\nПапок без подтверждённого конца списка: {result.UncertainFolders}.\n\nСайт может не показывать скрытые папки или часть списка. Это кэш доступных сообщений, а не подтверждённая резервная копия всего ящика.", "Загрузка завершена");
+        }
+        catch (OperationCanceledException) { notice.Text = "Остановлено. Сохранённые письма доступны из кэша."; }
+        catch { notice.Text = "Загрузка прервана. Проверьте вход, сеть и место для кэша. Сохранённые письма остались."; }
+        finally { batch.Dispose(); batch = null; loading = false; list.IsEnabled = true; cacheButton.Content = "Кэш всего ящика"; }
+    }
+    public void Close() { lifetime.Cancel(); cache.Clear(); selectedLetter = null; letters.Clear(); knownLetters.Clear(); list.Items.Clear(); body.Children.Clear(); }
     private async Task<T?> Extract<T>(string script) => JsonSerializer.Deserialize<T>(await session.View.CoreWebView2.ExecuteScriptAsync(script), FilterRules.Json);
     private async Task LoadList(bool refresh, bool more = false)
     {
@@ -79,17 +135,8 @@ public sealed class ReaderPane : Grid
                 if (found?.Count > 0) break;
             }
             lifetime.Token.ThrowIfCancellationRequested();
-            if (refresh) { cache.Clear(); selectedLetter = null; letters.Clear(); list.Items.Clear(); body.Children.Clear(); }
-            foreach (var letter in found ?? [])
-            {
-                if (!NavigationPolicy.IsMail(letter.Url) || letters.Any(x => x.Url == letter.Url) || letters.Count >= 500) continue;
-                letters.Add(letter);
-                var panel = new StackPanel { Margin = new Thickness(8), Width = 250 };
-                panel.Children.Add(new TextBlock { Text = letter.Sender + " · " + letter.Date, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis });
-                panel.Children.Add(new TextBlock { Text = letter.Subject, TextWrapping = TextWrapping.Wrap, MaxHeight = 48, Margin = new Thickness(0,4,0,4) });
-                panel.Children.Add(new TextBlock { Text = letter.Preview, TextTrimming = TextTrimming.CharacterEllipsis, Opacity = .65 });
-                list.Items.Add(new ListBoxItem { Content = panel, Tag = letter });
-            }
+            if (refresh) { cache.Clear(); selectedLetter = null; letters.Clear(); knownLetters.Clear(); list.Items.Clear(); body.Children.Clear(); }
+            foreach (var letter in found ?? []) AddLetter(letter);
             notice.Text = letters.Count == 0 ? "Откройте список писем в Mail.ru и включите режим снова. Возможно, нужен вход в аккаунт." : $"Загружено: {letters.Count}. Показаны письма с открытой страницы.";
         }
         catch (OperationCanceledException) { }
@@ -106,30 +153,14 @@ public sealed class ReaderPane : Grid
             List<ReaderBlock>? blocks;
             if (!cache.TryGetValue(letter.Url, out blocks))
             {
-                // DOMContentLoaded belongs to the new document. Do not wait for images/ads
-                // (NavigationCompleted), and never extract the previous document during navigation.
-                var ready = new TaskCompletionSource();
-                ulong? navigationId = null;
-                void Started(object? sender, Microsoft.Web.WebView2.Core.CoreWebView2NavigationStartingEventArgs args) => navigationId = args.NavigationId;
-                void DomReady(object? sender, Microsoft.Web.WebView2.Core.CoreWebView2DOMContentLoadedEventArgs args) { if (navigationId == args.NavigationId) ready.TrySetResult(); }
-                session.View.CoreWebView2.NavigationStarting += Started;
-                session.View.CoreWebView2.DOMContentLoaded += DomReady;
-                try
+                blocks = session.Cache.Get(letter.Url);
+                if (blocks is null)
                 {
-                    session.View.CoreWebView2.Navigate(letter.Url);
-                    await ready.Task.WaitAsync(TimeSpan.FromSeconds(20), lifetime.Token);
-                }
-                finally { session.View.CoreWebView2.NavigationStarting -= Started; session.View.CoreWebView2.DOMContentLoaded -= DomReady; }
-                for (var n = 0; n < 80; n++)
-                {
+                    blocks = await new ReaderSource(session).Read(letter, lifetime.Token);
                     lifetime.Token.ThrowIfCancellationRequested();
-                    if (NavigationPolicy.IsMail(session.View.CoreWebView2.Source))
-                        blocks = await Extract<List<ReaderBlock>>(ReaderScript.Body);
-                    if (blocks?.Count > 0) break;
-                    await Task.Delay(150, lifetime.Token);
-                }
-                lifetime.Token.ThrowIfCancellationRequested();
-                if (blocks?.Count > 0 && blocks.Sum(x => x.Text.Length + x.Image.Length) <= 500_000)
+                    try { session.Cache.Save(letter, blocks); }
+                    catch (Exception ex) when (ex is IOException or System.Security.Cryptography.CryptographicException or UnauthorizedAccessException) { notice.Text = "Письмо прочитано, но не сохранено в кэш."; }
+                }                if (blocks?.Count > 0 && blocks.Sum(x => x.Text.Length + x.Image.Length) <= 500_000)
                 {
                     while (cache.Count >= 12 || cache.Values.Sum(v => v.Sum(x => x.Text.Length + x.Image.Length)) > 500_000)
                         cache.Remove(cache.Keys.First());
@@ -175,8 +206,3 @@ public sealed class ReaderPane : Grid
     }
     private void AddText(string text, double size = 16) => body.Children.Add(new TextBlock { Text = text, FontSize = size, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0,0,0,12) });
 }
-
-
-
-
-
