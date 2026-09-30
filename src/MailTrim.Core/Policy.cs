@@ -93,22 +93,39 @@ public static class CosmeticScript
             catch { return false; }
           });
           const hideLabeledAds = () => {
-            // Examine only short, standalone ad labels. Never match an entire row's text or a subject substring.
-            for (const label of document.querySelectorAll('span, small, [aria-label="Реклама"], [aria-label="Advertisement"]')) {
-              if (label.closest(protectedContent) || label.childElementCount > 1) continue;
-              const text = [...label.childNodes].filter(n => n.nodeType === Node.TEXT_NODE).map(n => n.textContent).join('').trim();
-              if (!/^(?:реклама|advertisement|sponsored)(?:\s*\d{1,2}\+)?$/iu.test(text)) continue;
-              let node = label.parentElement;
-              for (let depth = 0; node && depth < 6; depth++, node = node.parentElement) {
-                if (node.matches('body, main, #app-canvas, [role="main"], [role="list"], .llct, .letter-list') || node.closest(protectedContent)) break;
-                if (hasMailLink(node)) break;
-                const links = [node, ...node.querySelectorAll('a[href]')].filter(a => a.matches('a[href]'));
-                const row = node.matches('.llc, .letter-list-item, [role="listitem"], .letter-list-item-adv, .letter-list-item-adv__container');
-                const adLink = links.some(isAdLink);
-                if ((row || adLink) && node.getBoundingClientRect().height <= 360 && node.getBoundingClientRect().width >= 180) {
-                  node.setAttribute('data-mailtrim-ad', 'true'); marked.add(node); break;
-                }
+            const hide = node => { node.setAttribute('data-mailtrim-ad', 'true'); marked.add(node); };
+            // Current Mail.ru wraps both ad cards and the no-ads offer in a narrow, hashed column.
+            // Hide its outer layout box, not just its creatives, so the mail list can expand.
+            for (const offer of document.querySelectorAll('.noads-button')) {
+              if (offer.closest(protectedContent)) continue;
+              let column = null;
+              for (let node = offer, depth = 0; node && depth < 10; node = node.parentElement, depth++) {
+                if (node.matches('body, main, #app-canvas, [role="main"]') || hasMailLink(node)) break;
+                const r = node.getBoundingClientRect();
+                if (r.width > 380 || r.left < innerWidth * .55) break;
+                if (r.width >= 100 && r.height >= 60) column = node;
               }
+              if (column) hide(column);
+            }
+            // Labels are DIVs with nested fragments, and ad clicks are JS handlers, not anchors.
+            // Read rendered text only from small labels, outside mail bodies and real message links.
+            for (const label of document.querySelectorAll('div, span, small, [aria-label="Реклама"], [aria-label="Advertisement"]')) {
+              if (label.closest(protectedContent) || label.closest('[data-mailtrim-ad]')) continue;
+              const link = label.closest('a[href]');
+              if (link && hasMailLink(link)) continue;
+              const size = label.getBoundingClientRect();
+              if (size.height <= 0 || size.height > 32 || size.width > 300) continue;
+              const text = (label.innerText || '').replace(/[\u200b-\u200d\ufeff]/g, '').trim();
+              if (!/^(?:реклама|advertisement|sponsored)(?:\s*\d{1,2}\+)?$/iu.test(text)) continue;
+              let node = label.parentElement, card = null;
+              for (let depth = 0; node && depth < 16; depth++, node = node.parentElement) {
+                if (node.matches('body, main, #app-canvas, [role="main"], [role="list"], .llct, .letter-list') || node.closest(protectedContent)) break;
+                if (hasMailLink(node) || node.querySelector('input, textarea, button, [role="toolbar"], [role="checkbox"], [contenteditable="true"]')) break;
+                const r = node.getBoundingClientRect();
+                if (r.height > 500) break;
+                if (r.height >= 40 && r.width >= 120) card = node;
+              }
+              if (card) hide(card);
             }
           };
           const apply = () => {

@@ -31,7 +31,10 @@ internal static class Program
                 Directory.CreateDirectory(root);
                 File.Copy(Path.Combine(AppContext.BaseDirectory, "rules", "legacy-0.1.0.json"), Path.Combine(root, "rules.json"));
                 var store = new LocalStore(root);
-                Check(store.Rules.Revision == "2026-09-30.2" && File.Exists(store.RulesPath + ".backup"), "unmodified legacy rules upgraded with backup");
+                Check(store.Rules.Revision == "2026-09-30.3" && File.Exists(store.RulesPath + ".backup"), "unmodified legacy rules upgraded with backup");
+                var previousRoot = Path.Combine(root, "previous-test"); Directory.CreateDirectory(previousRoot);
+                File.Copy(Path.Combine(AppContext.BaseDirectory, "rules", "legacy-0.1.1.json"), Path.Combine(previousRoot, "rules.json"));
+                Check(new LocalStore(previousRoot).Rules.Revision == "2026-09-30.3", "rules from 0.1.1 and 0.1.2 upgraded");
                 var customRoot = Path.Combine(root, "custom-test"); Directory.CreateDirectory(customRoot);
                 var custom = FilterRules.Parse(store.DefaultRules); custom.Revision = "custom"; custom.HideSelectors = [".user-rule"];
                 File.WriteAllText(Path.Combine(customRoot, "rules.json"), System.Text.Json.JsonSerializer.Serialize(custom, FilterRules.Json));
@@ -55,14 +58,19 @@ internal static class Program
                 foreach (var element in new[] { "newsletter", "letter-body", "editor" })
                     Check(await a.View.CoreWebView2.ExecuteScriptAsync($"getComputedStyle(document.getElementById('{element}')).display !== 'none' && !document.getElementById('{element}').querySelector('[data-mailtrim-ad]')") == "true", "legitimate content preserved: " + element);
                 await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('dynamic').innerHTML = '<div id=late-ad role=listitem class=card><span>Реклама 6+</span><a href=https://r.mail.ru/test>Late ad</a></div>'");
-                await WaitForScript(a, "getComputedStyle(document.getElementById('late-ad')).display === 'none'");
+                await WaitForScript(a, "document.getElementById('late-ad').getBoundingClientRect().height === 0");
                 Check(true, "late SPA ad hidden");
                 await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('late-ad').innerHTML = '<a href=/inbox/789><span>Реклама 6+</span>Real message replacing virtualized ad</a>'");
-                await WaitForScript(a, "getComputedStyle(document.getElementById('late-ad')).display !== 'none'");
+                await WaitForScript(a, "document.getElementById('late-ad').getBoundingClientRect().height > 0");
                 Check(true, "virtualized ad reused as message is restored");
                 await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('mailtrim-cosmetic-style').remove()");
                 await WaitForScript(a, "!!document.getElementById('mailtrim-cosmetic-style')");
                 Check(true, "removed CSS restored after SPA update");
+                await WaitForScript(a, "getComputedStyle(document.getElementById('hashed-banner-wrap')).display === 'none'");
+                Check(true, "nested DIV ad label without links hides whole banner");
+                await WaitForScript(a, "getComputedStyle(document.getElementById('right-ad-column')).display === 'none'");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('mail-list-main').getBoundingClientRect().width >= 895") == "true", "right column removed and mail list expands");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("getComputedStyle(document.querySelector('.js-letter-list-item')).display !== 'none' && !document.querySelector('.js-letter-list-item [data-mailtrim-ad]')") == "true", "current Mail.ru message link preserved");
                 var requestObserved = new TaskCompletionSource<bool>();
                 a.View.CoreWebView2.WebResourceRequested += (_, e) => { if (e.Request.Uri == "https://ad.mail.ru/banner") requestObserved.TrySetResult(e.Response?.StatusCode == 403); };
                 await a.View.CoreWebView2.ExecuteScriptAsync("fetch('https://ad.mail.ru/banner').catch(()=>{}); void 0");

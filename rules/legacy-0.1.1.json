@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "revision": "2026-09-30.3",
+  "revision": "2026-09-30.2",
   "blockedMailPathPrefixes": ["/api-proxy/rb-mimic/"],
   "removeLabeledAds": true,
   "blockedDomains": ["ad.mail.ru", "adfox.ru", "an.yandex.ru", "mc.yandex.ru", "top.mail.ru", "top-fwz1.mail.ru", "rs.mail.ru", "doubleclick.net", "googlesyndication.com", "google-analytics.com"],

@@ -14,6 +14,7 @@
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" GeneratePathProperty="true" />
     <Content Include="../../rules/default.json" Link="rules/default.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="../../rules/legacy-0.1.0.json" Link="rules/legacy-0.1.0.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../rules/legacy-0.1.1.json" Link="rules/legacy-0.1.1.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <Target Name="CopyWebView2Notices" AfterTargets="Publish">
     <Copy SourceFiles="$(PkgMicrosoft_Web_WebView2)/LICENSE.txt" DestinationFiles="$(PublishDir)WebView2-LICENSE.txt" />

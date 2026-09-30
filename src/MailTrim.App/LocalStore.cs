@@ -37,15 +37,16 @@ public sealed class LocalStore
         try
         {
             Rules = FilterRules.Parse(File.ReadAllText(RulesPath));
-            var legacy = FilterRules.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "rules", "legacy-0.1.0.json")));
-            if (JsonSerializer.Serialize(Rules, FilterRules.Json) == JsonSerializer.Serialize(legacy, FilterRules.Json))
+            var legacyRules = Directory.GetFiles(Path.Combine(AppContext.BaseDirectory, "rules"), "legacy-*.json")
+                .Select(path => FilterRules.Parse(File.ReadAllText(path))).ToArray();
+            if (legacyRules.Any(legacy => JsonSerializer.Serialize(Rules, FilterRules.Json) == JsonSerializer.Serialize(legacy, FilterRules.Json)))
             {
                 AtomicWrite(RulesPath + ".backup", File.ReadAllText(RulesPath));
                 Rules = FilterRules.Parse(DefaultRules);
                 AtomicWrite(RulesPath, JsonSerializer.Serialize(Rules, FilterRules.Json));
                 Log("bundled_rules_upgraded");
             }
-            else if (Rules.Revision == legacy.Revision) RulesUpgradeAvailable = true;
+            else if (legacyRules.Any(legacy => Rules.Revision == legacy.Revision)) RulesUpgradeAvailable = true;
         }
         catch (Exception ex) when (ex is FormatException or JsonException)
         {
