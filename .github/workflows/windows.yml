@@ -30,10 +30,17 @@ jobs:
         run: dotnet build MailTrim.sln -c Release --no-restore
       - name: Core checks
         run: dotnet run --project tests/MailTrim.Tests -c Release --no-build
+      - name: Update restart and rollback checks
+        run: dotnet run --project tests/MailTrim.UpdateTests -c Release --no-build -- "${{ runner.temp }}/mailtrim-update-tests"
       - name: WebView2 integration checks
         run: dotnet run --project tests/MailTrim.Smoke -c Release --no-build -- "${{ runner.temp }}/mailtrim-smoke"
       - name: Package standalone Windows application
         run: ./scripts/Publish.ps1
+      - name: Verify actual release package
+        shell: pwsh
+        run: |
+          $archive = Get-ChildItem artifacts/*.zip | Select-Object -First 1
+          dotnet run --project tests/MailTrim.UpdateTests -c Release --no-build -- --verify-package $archive.FullName "$env:RUNNER_TEMP/mailtrim-package-check"
       - name: Upload ZIP and SHA-256
         id: package
         uses: actions/upload-artifact@v4

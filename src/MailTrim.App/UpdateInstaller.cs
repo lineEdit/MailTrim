@@ -12,13 +12,6 @@ namespace MailTrim.App;
 public static class UpdateInstaller
 {
     private static string Root => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MailTrim", "Updates");
-    private sealed record Plan(int ProcessId, string Previous, string Version);
-    private static Process Start(string executable, params string[] arguments)
-    {
-        var info = new ProcessStartInfo(executable) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(executable)! };
-        foreach (var argument in arguments) info.ArgumentList.Add(argument);
-        return Process.Start(info) ?? throw new IOException("Cannot start application");
-    }
     public static bool Redirect(string[] args)
     {
         if (args.Contains("--skip-update") || args.Contains("--update-ready")) return false;
@@ -27,7 +20,7 @@ public static class UpdateInstaller
             var id = Guid.Parse(File.ReadAllText(Path.Combine(Root, "current.txt")));
             var executable = Path.Combine(Root, id.ToString("N"), "app", "MailTrim.exe");
             if (AssemblyName.GetAssemblyName(Path.ChangeExtension(executable, ".dll")).Version! <= typeof(App).Assembly.GetName().Version!) return false;
-            using var child = Start(executable, args);
+            using var child = UpdateHandoff.Start(executable, args);
             return true;
         }
         catch { return false; }
@@ -40,46 +33,15 @@ public static class UpdateInstaller
     }
     public static async Task Apply(string idText)
     {
-        Process? child = null;
-        Plan? plan = null;
-        var oldExited = false;
-        try
-        {
-            var id = Guid.ParseExact(idText, "N");
-            var directory = Path.Combine(Root, id.ToString("N"));
-            plan = JsonSerializer.Deserialize<Plan>(File.ReadAllText(Path.Combine(directory, "plan.json"))) ?? throw new IOException();
-            if (!string.Equals(plan.Previous, Environment.ProcessPath, StringComparison.OrdinalIgnoreCase)) throw new IOException("Unexpected source");
-            var executable = Path.Combine(directory, "app", "MailTrim.exe");
-            if (AssemblyName.GetAssemblyName(Path.ChangeExtension(executable, ".dll")).Version != Version.Parse(plan.Version)) throw new IOException("Unexpected version");
-            try
+        var result = await UpdateHandoff.Apply(Root, idText, Environment.ProcessPath!);
+        if (result != UpdateResult.Installed)
+            MessageBox.Show(result switch
             {
-                using var previous = Process.GetProcessById(plan.ProcessId);
-                if (!string.Equals(previous.MainModule?.FileName, plan.Previous, StringComparison.OrdinalIgnoreCase)) throw new IOException("Unexpected process");
-                await previous.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(45));
-            }
-            catch (ArgumentException) { /* The original process has already exited. */ }
-            oldExited = true;
-            using var ready = new EventWaitHandle(false, EventResetMode.ManualReset, @"Local\MailTrim-Update-" + id.ToString("N"));
-            child = Start(executable, "--update-ready", id.ToString("N"));
-            if (!await Task.Run(() => ready.WaitOne(TimeSpan.FromSeconds(60))) || child.HasExited) throw new IOException("Startup failed");
-            var pointer = Path.Combine(Root, "current.txt");
-            File.WriteAllText(pointer + ".tmp", id.ToString("N"));
-            File.Move(pointer + ".tmp", pointer, true);
-        }
-        catch
-        {
-            if (oldExited && plan is not null)
-            {
-                try
-                {
-                    if (child is { HasExited: false }) { child.Kill(); await child.WaitForExitAsync(); }
-                    using var restored = Start(plan.Previous, "--skip-update");
-                }
-                catch { /* The original executable remains available for a manual restart. */ }
-            }
-            MessageBox.Show("Обновление не завершено. Предыдущая версия сохранена. Повторите попытку позже.", "MailTrim");
-        }
-        finally { child?.Dispose(); }
+                UpdateResult.PreviousStillRunning => "Приложение не завершило работу. Обновление отменено, текущая версия продолжает работать.",
+                UpdateResult.RolledBack => "Новая версия не запустилась. Запущена предыдущая версия.",
+                UpdateResult.ManualRestartRequired => "Обновление не завершено. Запустите MailTrim из прежней папки вручную.",
+                _ => "Обновление не прошло проверку. Предыдущая версия сохранена."
+            }, "MailTrim");
     }
     public static void Show(Window owner, LocalStore store, ReleaseCandidate release)
     {
@@ -117,8 +79,8 @@ public static class UpdateInstaller
                 if (AssemblyName.GetAssemblyName(Path.Combine(app, "MailTrim.dll")).Version != release.Version) throw new InvalidDataException();
                 cancellation.Token.ThrowIfCancellationRequested();
                 if (MessageBox.Show(window, "Обновление готово. Сохраните незавершённые письма. Перезапустить MailTrim сейчас?", "MailTrim", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
-                File.WriteAllText(Path.Combine(directory, "plan.json"), JsonSerializer.Serialize(new Plan(Environment.ProcessId, Environment.ProcessPath!, release.Version.ToString())));
-                using var helper = Start(Environment.ProcessPath!, "--apply-update", id);
+                File.WriteAllText(Path.Combine(directory, "plan.json"), JsonSerializer.Serialize(new UpdatePlan(Environment.ProcessId, Environment.ProcessPath!, release.Version.ToString())));
+                using var helper = UpdateHandoff.Start(Environment.ProcessPath!, "--apply-update", id);
                 working = false;
                 window.Close();
                 System.Windows.Application.Current.Shutdown();
