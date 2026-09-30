@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "revision": "2026-09-30.1",
+  "blockedDomains": ["ad.mail.ru", "adfox.ru", "an.yandex.ru", "mc.yandex.ru", "top.mail.ru", "top-fwz1.mail.ru", "rs.mail.ru", "doubleclick.net", "googlesyndication.com", "google-analytics.com"],
+  "allowedDomains": [],
+  "hideSelectors": ["[data-testid=\"advertising\"]", "[data-testid=\"advertisement\"]", ".mailru-ads", "[data-ad-slot]", "iframe[src*=\"ad.mail.ru\"]", "iframe[src*=\"adfox.ru\"]"],
+  "aggressiveSelectors": ["[data-testid=\"promo\"]", "[data-testid=\"recommendations\"]", "[data-testid=\"news\"]", "[class*=\"ph-project-promo\"]", "[class*=\"mail-space-promo\"]"]
+}

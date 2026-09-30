@@ -1,0 +1,13 @@
+**/bin/
+**/obj/
+.vs/
+.idea/
+artifacts/
+*.user
+*.suo
+*.log
+*.pfx
+*.p12
+**/UserData/
+**/Profiles/
+.env*

@@ -1,0 +1,31 @@
+using MailTrim.Core;
+
+var passed = 0;
+void Check(bool condition, string name) { if (!condition) throw new Exception("FAIL: " + name); Console.WriteLine("PASS " + name); passed++; }
+foreach (var url in new[] { "https://e.mail.ru/inbox/", "https://account.mail.ru/login", "https://id.vk.com/auth" })
+    Check(NavigationPolicy.IsInternal(url), "official origin " + url);
+foreach (var url in new[] { "https://e.mail.ru.evil.test/", "https://evilmail.ru/", "http://e.mail.ru/", "https://e.mail.ru:444/", "https://evil@e.mail.ru/", "file:///C:/Windows/", "javascript:alert(1)", "https://news.mail.ru/" })
+    Check(!NavigationPolicy.IsInternal(url), "reject internal " + url);
+Check(!NavigationPolicy.IsExternal("file:///C:/Windows"), "no shell file launch");
+Check(!NavigationPolicy.IsExternal("ms-settings:privacy"), "no arbitrary protocols");
+Check(!NavigationPolicy.IsExternal("https://user:pass@example.org"), "no URL credentials");
+var rules = FilterRules.Parse("""{"blockedDomains":["ads.example.com","mail.ru"],"allowedDomains":["safe.ads.example.com"]} """);
+Check(rules.ShouldBlock("https://a.ads.example.com/x", true), "subdomain blocked");
+Check(!rules.ShouldBlock("https://notads.example.com/x", true), "domain boundary");
+Check(!rules.ShouldBlock("https://ads.example.com.evil.test/x", true), "suffix boundary");
+Check(!rules.ShouldBlock("https://safe.ads.example.com/x", true), "allow wins");
+Check(!rules.ShouldBlock("https://e.mail.ru/x", true), "mail protected");
+Check(!rules.ShouldBlock("https://account.mail.ru/x", true), "auth protected");
+Check(!rules.ShouldBlock("https://ads.example.com/x", false), "pause bypass");
+foreach (var json in new[] { "null", "{}", "{\"schemaVersion\":2}", "{\"blockedDomains\":[\"*.example.com\"]}", "{\"hideSelectors\":[\"body { color:red }\"]}", "{\"allowedDomains\":null}" })
+{
+    if (json == "{}") { Check(FilterRules.Parse(json).SchemaVersion == 1, "empty lists default"); continue; }
+    var rejected = false;
+    try { FilterRules.Parse(json); } catch (Exception ex) when (ex is FormatException or System.Text.Json.JsonException) { rejected = true; }
+    Check(rejected, "invalid rules rejected " + json);
+}
+var script = CosmeticScript.Create(new FilterRules { HideSelectors = ["[data-testid=\"ad\"]"] }, true, false);
+Check(script.Contains("window.top !== window") && script.Contains("location.origin !== 'https://e.mail.ru'"), "cosmetic origin and frame guard");
+Check(!script.Contains("fetch(") && !script.Contains("chrome.webview"), "no script network/native bridge");
+Check(CosmeticScript.Create(rules, false, true).Contains("const selectors = [];"), "paused cosmetics empty");
+Console.WriteLine($"{passed} checks passed.");

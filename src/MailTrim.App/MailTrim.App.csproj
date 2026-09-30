@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>MailTrim</AssemblyName>
+    <RootNamespace>MailTrim.App</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../MailTrim.Core/MailTrim.Core.csproj" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" GeneratePathProperty="true" />
+    <Content Include="../../rules/default.json" Link="rules/default.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="CopyWebView2Notices" AfterTargets="Publish">
+    <Copy SourceFiles="$(PkgMicrosoft_Web_WebView2)/LICENSE.txt" DestinationFiles="$(PublishDir)WebView2-LICENSE.txt" />
+    <Copy SourceFiles="$(PkgMicrosoft_Web_WebView2)/NOTICE.txt" DestinationFiles="$(PublishDir)WebView2-NOTICE.txt" />
+  </Target>
+</Project>

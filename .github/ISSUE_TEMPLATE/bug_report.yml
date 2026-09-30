@@ -1,0 +1,23 @@
+name: Ошибка
+description: Сообщить о проблеме без персональных данных
+body:
+  - type: markdown
+    attributes:
+      value: Не прикладывайте письма, cookies, папку Profiles, пароли и URL с токенами.
+  - type: input
+    id: version
+    attributes:
+      label: Версия MailTrim / Windows / WebView2
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Шаги, ожидаемое и фактическое поведение
+    validations:
+      required: true
+  - type: dropdown
+    id: filters
+    attributes:
+      label: Повторяется при приостановленных фильтрах?
+      options: ['Да', 'Нет', 'Не проверялось']

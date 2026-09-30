@@ -1,0 +1,20 @@
+<Window x:Class="MailTrim.App.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="MailTrim" Width="1320" Height="850" MinWidth="860" MinHeight="560" WindowStartupLocation="CenterScreen">
+ <Grid>
+  <Grid.RowDefinitions><RowDefinition Height="72"/><RowDefinition Height="*"/><RowDefinition Height="32"/></Grid.RowDefinitions>
+  <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1">
+   <Grid Margin="20,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+    <StackPanel Orientation="Horizontal" VerticalAlignment="Center"><Border Background="#3366EB" CornerRadius="10" Padding="10,7"><TextBlock Text="M" FontWeight="Bold" Foreground="White" FontSize="22"/></Border><StackPanel Margin="12,0"><TextBlock Text="MailTrim" FontSize="20" FontWeight="SemiBold"/><TextBlock Text="Ваша почта. Меньше лишнего." Foreground="{DynamicResource Muted}" FontSize="12"/></StackPanel></StackPanel>
+    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"><Button Content="←" ToolTip="Назад (Alt+Left)" Click="Back_Click"/><Button Content="Обновить" ToolTip="F5" Click="Reload_Click"/><Button Content="Входящие" Click="Home_Click"/><Button x:Name="PauseButton" Content="Приостановить фильтры" Click="Pause_Click"/><Button Content="Настройки" Click="Settings_Click"/></StackPanel>
+   </Grid>
+  </Border>
+  <Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition Width="220"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+   <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,0,1,0"><DockPanel Margin="14,20">
+    <StackPanel DockPanel.Dock="Top"><TextBlock Text="ЯЩИКИ" FontSize="11" FontWeight="Bold" Foreground="{DynamicResource Muted}" Margin="8,0,0,12"/><Button Content="+ Добавить ящик" Click="Add_Click"/></StackPanel>
+    <StackPanel DockPanel.Dock="Bottom"><Button Content="Переименовать" Click="Rename_Click"/><Button Content="Очистить сессию…" Click="Clear_Click"/><Button Content="Удалить профиль…" Click="Remove_Click"/><TextBlock Text="Вход через официальный сайт Mail.ru. Пароли приложение не сохраняет." TextWrapping="Wrap" Margin="8,18,8,0" FontSize="12" Foreground="{DynamicResource Muted}"/></StackPanel>
+    <ListBox x:Name="Profiles" Margin="0,12" Background="Transparent" Foreground="{DynamicResource Ink}" BorderThickness="0" SelectionChanged="Profiles_SelectionChanged" ScrollViewer.HorizontalScrollBarVisibility="Disabled"><ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Name}" Margin="8,12" TextTrimming="CharacterEllipsis" MaxWidth="160"/></DataTemplate></ListBox.ItemTemplate></ListBox>
+   </DockPanel></Border>
+   <Grid Grid.Column="1"><TextBlock x:Name="EmptyLabel" Text="Добавьте ящик, чтобы открыть почту" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource Muted}"/><Grid x:Name="BrowserHost"/></Grid>
+  </Grid>
+  <Border Grid.Row="2" Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0"><Grid Margin="20,0"><TextBlock x:Name="Status" Text="Готово" FontSize="12" VerticalAlignment="Center" Foreground="{DynamicResource Muted}"/><TextBlock Text="MailTrim 0.1.0 • WebView2" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center" Foreground="{DynamicResource Muted}"/></Grid></Border>
+ </Grid>
+</Window>
