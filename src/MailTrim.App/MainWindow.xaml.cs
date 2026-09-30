@@ -40,6 +40,7 @@ public partial class MainWindow : Window
         };
         if (desktopFeatures)
         {
+            _ = new WindowPositionManager(this, store);
             desktop = new DesktopIntegration(this, store);
             var backgroundHost = new Grid { Visibility = Visibility.Hidden, IsHitTestVisible = false };
             ((Grid)Content).Children.Add(backgroundHost);

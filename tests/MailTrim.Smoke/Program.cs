@@ -266,7 +266,32 @@ internal static class Program
                     Check(!trayClosed && !trayWindow.IsVisible, "window close hides to tray without destroying session");
                     integration.Restore(); Check(trayWindow.IsVisible, "tray action restores hidden window");
                     store.Settings.CloseToTray = false; trayWindow.Close(); Check(trayClosed, "disabling tray closing allows normal exit");
-                }                Console.WriteLine("WebView2 smoke checks passed."); result = 0;
+                }                var placementWindow = new Window { Width = 640, Height = 480, Left = -20000, Top = -20000, ShowActivated = false, ShowInTaskbar = false, Opacity = 0 };
+                _ = new WindowPositionManager(placementWindow, store);
+                placementWindow.Show();
+                var savedBounds = WindowPositionManager.Capture(placementWindow)!;
+                Check(savedBounds.IsValid && !savedBounds.Maximized, "capture normal restore geometry");
+                Check(WindowPositionManager.Restore(placementWindow, new SavedWindowPosition(-900000, -900000, -899360, -899520, false)), "restore formerly disconnected monitor placement");
+                var recoveredBounds = WindowPositionManager.Capture(placementWindow)!;
+                Check(recoveredBounds.IsValid && Math.Abs(recoveredBounds.Left) < 100000 && Math.Abs(recoveredBounds.Top) < 100000, "Windows recovers an off-screen window");
+                placementWindow.WindowState = WindowState.Maximized;
+                Check(WindowPositionManager.Capture(placementWindow)!.Maximized, "capture maximized window with normal restore bounds");
+                placementWindow.WindowState = WindowState.Minimized;
+                Check(WindowPositionManager.Capture(placementWindow)!.Maximized, "minimize preserves restore-to-maximized state");
+                using (var placementTray = new DesktopIntegration(placementWindow, store, false))
+                {
+                    placementTray.Restore(); Check(placementWindow.WindowState == WindowState.Maximized, "tray restore preserves maximized state after minimize");
+                    store.Settings.CloseToTray = true; placementWindow.Close();
+                    Check(store.Settings.WindowPosition?.Maximized == true, "closing to tray saves maximized placement");
+                    store.Settings.CloseToTray = false; placementWindow.Close();
+                }
+                Check(new LocalStore(root).Settings.WindowPosition?.Maximized == true, "window placement persists across settings reload");
+                var restartedWindow = new Window { Width = 400, Height = 300, ShowActivated = false, ShowInTaskbar = false, Opacity = 0 };
+                _ = new WindowPositionManager(restartedWindow, new LocalStore(root));
+                restartedWindow.Show();
+                Check(restartedWindow.WindowState == WindowState.Maximized, "new window restores persisted maximized state on startup");
+                restartedWindow.Close();
+                Console.WriteLine("WebView2 smoke checks passed."); result = 0;
             }
             catch (Exception ex) { Console.Error.WriteLine(ex); }
             finally { foreach (var s in sessions) s.Dispose(); window.Close(); app.Shutdown(); }

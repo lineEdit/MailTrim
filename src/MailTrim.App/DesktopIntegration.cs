@@ -46,7 +46,8 @@ public sealed class DesktopIntegration : IDisposable
     }
     public void Restore()
     {
-        window.Show(); if (window.WindowState == WindowState.Minimized) window.WindowState = WindowState.Normal;
+        var maximized = WindowPositionManager.Capture(window)?.Maximized == true;
+        window.Show(); if (window.WindowState == WindowState.Minimized) window.WindowState = maximized ? WindowState.Maximized : WindowState.Normal;
         window.Activate();
     }
     [System.Runtime.InteropServices.DllImport("user32.dll")]

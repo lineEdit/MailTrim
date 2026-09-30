@@ -31,6 +31,15 @@ public sealed class AppSettings
     public bool CloseToTray { get; set; } = true;
     public bool NotifyNewMail { get; set; } = true;
     public bool UseSiteNotifications { get; set; }
+    public SavedWindowPosition? WindowPosition { get; set; }
+}
+
+// Win32 workspace coordinates, used only with Get/SetWindowPlacement.
+public sealed record SavedWindowPosition(int Left, int Top, int Right, int Bottom, bool Maximized)
+{
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsValid => Math.Abs((long)Left) <= 1_000_000 && Math.Abs((long)Top) <= 1_000_000
+        && (long)Right - Left is >= 300 and <= 32_000 && (long)Bottom - Top is >= 200 and <= 32_000;
 }
 
 
