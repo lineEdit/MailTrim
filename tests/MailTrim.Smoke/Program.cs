@@ -171,7 +171,15 @@ internal static class Program
                 var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
                 using (var file = File.Create(Path.Combine(root, "shell-preview.png"))) encoder.Save(file);
                 shell.Close();
-                Console.WriteLine("WebView2 smoke checks passed."); result = 0;
+                var trayWindow = new Window { Width = 300, Height = 200, Left = -20000, Top = -20000, ShowActivated = false, ShowInTaskbar = false };
+                bool trayClosed = false; trayWindow.Closed += (_, _) => trayClosed = true;
+                using (var integration = new DesktopIntegration(trayWindow, store, false))
+                {
+                    store.Settings.CloseToTray = true; trayWindow.Show(); trayWindow.Close();
+                    Check(!trayClosed && !trayWindow.IsVisible, "window close hides to tray without destroying session");
+                    integration.Restore(); Check(trayWindow.IsVisible, "tray action restores hidden window");
+                    store.Settings.CloseToTray = false; trayWindow.Close(); Check(trayClosed, "disabling tray closing allows normal exit");
+                }                Console.WriteLine("WebView2 smoke checks passed."); result = 0;
             }
             catch (Exception ex) { Console.Error.WriteLine(ex); }
             finally { foreach (var s in sessions) s.Dispose(); window.Close(); app.Shutdown(); }
@@ -224,4 +232,5 @@ internal static class Program
         Console.WriteLine("PASS " + name);
     }
 }
+
 

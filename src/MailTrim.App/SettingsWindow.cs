@@ -9,9 +9,13 @@ namespace MailTrim.App;
 public sealed class SettingsWindow : Window
 {
     private readonly LocalStore store;
+    public bool RequiresReload { get; private set; }
     private readonly CheckBox network = new() { Content = "Блокировать рекламные и аналитические запросы" };
     private readonly CheckBox cosmetic = new() { Content = "Скрывать рекламные блоки CSS-фильтрами" };
     private readonly CheckBox aggressive = new() { Content = "Дополнительно скрывать промо, новости и рекомендации" };
+    private readonly CheckBox startup = new() { Content = "Запускать вместе с Windows, свёрнутым в трей" };
+    private readonly CheckBox tray = new() { Content = "При закрытии окна продолжать работу в трее" };
+    private readonly CheckBox notifications = new() { Content = "Уведомлять о новых письмах (проверка примерно раз в 2 минуты)" };
     private readonly CheckBox updates = new() { Content = "Проверять новые версии при запуске (запрос к GitHub)" };
     private readonly ComboBox theme = new() { ItemsSource = new[] { "System", "Light", "Dark" }, Width = 180, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly TextBox repository = new() { MaxLength = 120 };
@@ -21,11 +25,12 @@ public sealed class SettingsWindow : Window
         this.store = store;
         Title = "Настройки MailTrim"; Width = 820; Height = 780; MinWidth = 640; MinHeight = 550; WindowStartupLocation = WindowStartupLocation.CenterOwner;
         network.IsChecked = store.Settings.BlockRequests; cosmetic.IsChecked = store.Settings.CosmeticFilters; aggressive.IsChecked = store.Settings.Aggressive;
+        startup.IsChecked = store.Settings.StartWithWindows; tray.IsChecked = store.Settings.CloseToTray; notifications.IsChecked = store.Settings.NotifyNewMail;
         updates.IsChecked = store.Settings.CheckUpdatesOnStartup; theme.SelectedItem = store.Settings.Theme; repository.Text = store.Settings.UpdateRepository;
         rules.Text = System.Text.Json.JsonSerializer.Serialize(store.Rules, FilterRules.Json);
         var root = new DockPanel { Margin = new Thickness(24) }; Content = root;
         var footer = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0,16,0,0) };
-        var cancel = new Button { Content = "Отмена", IsCancel = true }; var save = new Button { Content = "Сохранить и перезагрузить" };
+        var cancel = new Button { Content = "Отмена", IsCancel = true }; var save = new Button { Content = "Сохранить" };
         footer.Children.Add(cancel); footer.Children.Add(save); DockPanel.SetDock(footer, Dock.Bottom); root.Children.Add(footer);
         var tabs = new TabControl(); root.Children.Add(tabs);
         var main = new StackPanel { Margin = new Thickness(16) };
@@ -41,6 +46,12 @@ public sealed class SettingsWindow : Window
         main.Children.Add(Label("Локальные данные"));
         main.Children.Add(Note("Сессии хранятся в %LOCALAPPDATA%\\MailTrim\\Profiles. Журнал содержит только время и коды событий, без адресов, URL, заголовков и содержимого писем."));
         tabs.Items.Add(new TabItem { Header = "Общие", Content = new ScrollViewer { Content = main, VerticalScrollBarVisibility = ScrollBarVisibility.Auto } });
+        var desktopPanel = new StackPanel { Margin = new Thickness(16) };
+        desktopPanel.Children.Add(Label("Запуск и фоновая работа"));
+        desktopPanel.Children.Add(startup); desktopPanel.Children.Add(tray); desktopPanel.Children.Add(notifications);
+        desktopPanel.Children.Add(Note("Значок рядом с часами: двойной щелчок открывает окно, «Выйти» полностью закрывает приложение. Автозапуск привязан к текущему расположению EXE; после переноса приложения включите его заново."));
+        desktopPanel.Children.Add(Note("Проверяются входящие через отдельную веб-сессию того же профиля, без открытия писем. Первый успешный опрос задаёт исходный список и не уведомляет о старой почте. Нужны интернет и действующий вход Mail.ru/VK ID. Уведомления не содержат текстов писем; Windows может скрывать их в режиме «Не беспокоить»."));
+        tabs.Items.Add(new TabItem { Header = "Windows и уведомления", Content = new ScrollViewer { Content = desktopPanel } });
         var rulePanel = new DockPanel { Margin = new Thickness(16) };
         var intro = Note("JSON-правила применяются без пересборки. allowedDomains имеет приоритет над blockedDomains. Домены включают поддомены. Для скрытия допустимы только CSS-селекторы. Произвольный загружаемый JavaScript не выполняется.");
         DockPanel.SetDock(intro, Dock.Top); rulePanel.Children.Add(intro);
@@ -63,10 +74,17 @@ public sealed class SettingsWindow : Window
                 var repo = repository.Text.Trim();
                 if (repo.Length > 0 && !UpdateChecker.ValidRepository(repo)) throw new FormatException("Репозиторий: owner/repository, без URL.");
                 if (updates.IsChecked == true && repo.Length == 0) throw new FormatException("Укажите репозиторий для проверки обновлений.");
-                if (MessageBox.Show(this, "Открытые страницы будут перезагружены. Сохраните незавершённые письма перед продолжением.", "Применить настройки", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;
+                RequiresReload = store.Settings.BlockRequests != (network.IsChecked == true)
+                    || store.Settings.CosmeticFilters != (cosmetic.IsChecked == true)
+                    || store.Settings.Aggressive != (aggressive.IsChecked == true)
+                    || store.Settings.Theme != (string)theme.SelectedItem
+                    || rules.Text != System.Text.Json.JsonSerializer.Serialize(store.Rules, FilterRules.Json);
+                if (RequiresReload && MessageBox.Show(this, "Открытые страницы будут перезагружены. Сохраните незавершённые письма перед продолжением.", "Применить настройки", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;
                 store.SaveRules(rules.Text);
                 store.Settings.BlockRequests = network.IsChecked == true; store.Settings.CosmeticFilters = cosmetic.IsChecked == true; store.Settings.Aggressive = aggressive.IsChecked == true;
                 store.Settings.Theme = (string)theme.SelectedItem; store.Settings.UpdateRepository = repo; store.Settings.CheckUpdatesOnStartup = updates.IsChecked == true;
+                WindowsStartup.SetEnabled(startup.IsChecked == true);
+                store.Settings.StartWithWindows = startup.IsChecked == true; store.Settings.CloseToTray = tray.IsChecked == true; store.Settings.NotifyNewMail = notifications.IsChecked == true;
                 store.Save(); DialogResult = true;
             }
             catch (FormatException ex) { MessageBox.Show(this, ex.Message, "Проверьте настройки"); }
@@ -86,3 +104,5 @@ public sealed class SettingsWindow : Window
     private static TextBlock Label(string text) => new() { Text = text, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0,22,0,8) };
     private static TextBlock Note(string text) => new() { Text = text, TextWrapping = TextWrapping.Wrap, Opacity = 0.8, Margin = new Thickness(0,8,0,8) };
 }
+
+

@@ -36,4 +36,11 @@ var script = CosmeticScript.Create(new FilterRules { HideSelectors = ["[data-tes
 Check(script.Contains("window.top !== window") && script.Contains("location.origin !== 'https://e.mail.ru'"), "cosmetic origin and frame guard");
 Check(!script.Contains("fetch(") && !script.Contains("chrome.webview"), "no script network/native bridge");
 Check(CosmeticScript.Create(rules, false, true).Contains("const selectors = [];"), "paused cosmetics empty");
-Console.WriteLine($"{passed} checks passed.");
+var tracker = new NewMailTracker(); var profile = Guid.NewGuid();
+Check(tracker.Observe(profile, ["https://e.mail.ru/inbox/old"]) == 0, "mail notification first snapshot is quiet");
+Check(tracker.Observe(profile, ["https://e.mail.ru/inbox/new", "https://e.mail.ru/inbox/old"]) == 1, "new inbox head notifies once");
+Check(tracker.Observe(profile, ["https://e.mail.ru/inbox/new", "https://e.mail.ru/inbox/old"]) == 0, "unchanged inbox does not notify again");
+Check(tracker.Observe(Guid.NewGuid(), ["https://e.mail.ru/inbox/new"]) == 0, "notification baseline is isolated per account");
+Check(tracker.Observe(profile, ["https://e.mail.ru/inbox/old"]) == 0, "removed head does not announce old mail");
+tracker.Clear(); Check(tracker.Observe(profile, ["https://e.mail.ru/inbox/new"]) == 0, "reenabling notifications resets baseline");Console.WriteLine($"{passed} checks passed.");
+

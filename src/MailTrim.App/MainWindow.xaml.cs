@@ -13,10 +13,13 @@ public partial class MainWindow : Window
     private readonly Dictionary<Guid, BrowserSession> sessions = [];
     private ReaderPane? reader;
     private bool readerMode;
+    private DesktopIntegration? desktop;
+    private MailMonitor? monitor;
+    public void RestoreWindow() { if (desktop is not null) desktop.Restore(); else { Show(); Activate(); } }
     private bool paused;
     private bool busy;
     private BrowserSession? Current => Profiles.SelectedItem is AccountProfile p ? sessions.GetValueOrDefault(p.Id) : null;
-    public MainWindow(LocalStore store)
+    public MainWindow(LocalStore store, bool desktopFeatures = false)
     {
         this.store = store;
         InitializeComponent(); ApplyTheme();
@@ -28,13 +31,21 @@ public partial class MainWindow : Window
             if (store.RulesUpgradeAvailable) MessageBox.Show(this, "Доступны новые фильтры рекламы. Ваш изменённый набор сохранён. Чтобы использовать новый набор: Настройки → Правила → Встроенные правила → Сохранить и перезагрузить. Это заменит ваши изменения правил.", "Обновление фильтров");
             if (store.Settings.CheckUpdatesOnStartup) await UpdateChecker.Check(this, store, true);
         };
-        Closed += (_, _) => { CloseReader(); foreach (var session in sessions.Values) session.Dispose(); store.Log("app_closed"); };
+        Closed += (_, _) => { monitor?.Dispose(); desktop?.Dispose(); CloseReader(); foreach (var session in sessions.Values) session.Dispose(); store.Log("app_closed"); };
         Closing += (_, e) => { if (busy) { e.Cancel = true; Status.Text = "Дождитесь завершения текущей операции."; } };
         PreviewKeyDown += (_, e) =>
         {
             if (e.Key == Key.F5) { CloseReader(); Current?.View.Reload(); e.Handled = true; }
             if (e.SystemKey == Key.Left && Current?.View.CanGoBack == true) { CloseReader(); Current.View.GoBack(); e.Handled = true; }
         };
+        if (desktopFeatures)
+        {
+            desktop = new DesktopIntegration(this, store);
+            var backgroundHost = new Grid { Visibility = Visibility.Hidden, IsHitTestVisible = false };
+            ((Grid)Content).Children.Add(backgroundHost);
+            Grid.SetRow(backgroundHost, 1);
+            monitor = new MailMonitor(store, backgroundHost, count => desktop.Notify(count), () => !busy); monitor.Start();
+        }
         store.Log("app_started");
     }
 
@@ -63,7 +74,7 @@ public partial class MainWindow : Window
     {
         if (busy) return;
         busy = true; IsEnabled = false;
-        try { await action(); }
+        try { if (monitor is not null) await monitor.StopAsync(); await action(); }
         catch (Microsoft.Web.WebView2.Core.WebView2RuntimeNotFoundException)
         {
             MessageBox.Show(this, "Не найден Microsoft Edge WebView2 Runtime. Установите Evergreen Runtime с сайта Microsoft и перезапустите приложение. Ссылка есть в README.", "Нужен WebView2");
@@ -164,7 +175,8 @@ public partial class MainWindow : Window
     }
     private async void Settings_Click(object sender, RoutedEventArgs e)
     {
-        if (new SettingsWindow(store) { Owner = this }.ShowDialog() != true) return;
+        var dialog = new SettingsWindow(store) { Owner = this };
+        if (dialog.ShowDialog() != true || !dialog.RequiresReload) return;
         await Run(async () => { CloseReader(); ApplyTheme(); foreach (var s in sessions.Values) await s.ApplySettings(); });
     }
     private void ApplyTheme()
@@ -175,6 +187,9 @@ public partial class MainWindow : Window
         for (int i = 0; i < keys.Length; i++) Application.Current.Resources[keys[i]] = new SolidColorBrush((Color)ColorConverter.ConvertFromString(colors[i]));
     }
 }
+
+
+
 
 
 

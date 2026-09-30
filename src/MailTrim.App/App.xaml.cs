@@ -5,17 +5,26 @@ namespace MailTrim.App;
 public partial class App : Application
 {
     private Mutex? instance;
+    private EventWaitHandle? activation;
+    private RegisteredWaitHandle? activationWait;
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
         instance = new Mutex(true, @"Local\MailTrim-" + Environment.UserName, out var first);
-        if (!first) { MessageBox.Show("MailTrim уже запущен."); Shutdown(); return; }
+        activation = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\MailTrim-Activate-" + Environment.UserName);
+        if (!first) { activation.Set(); Shutdown(); return; }
         try
         {
             var store = new LocalStore();
-            var window = new MainWindow(store);
+            if (store.Settings.StartWithWindows)
+            {
+                try { WindowsStartup.SetEnabled(true); } catch { store.Log("startup_registration_failed"); }
+            }
+            var window = new MainWindow(store, true);
             MainWindow = window;
+            activationWait = ThreadPool.RegisterWaitForSingleObject(activation, (_, _) => Dispatcher.BeginInvoke(() => window.RestoreWindow()), null, Timeout.Infinite, false);
             window.Show();
+            if (e.Args.Contains("--tray")) window.Hide();
         }
         catch (Exception ex)
         {
@@ -23,5 +32,8 @@ public partial class App : Application
             Shutdown(1);
         }
     }
-    protected override void OnExit(ExitEventArgs e) { instance?.Dispose(); base.OnExit(e); }
+    protected override void OnExit(ExitEventArgs e) { activationWait?.Unregister(null); activation?.Dispose(); instance?.Dispose(); base.OnExit(e); }
 }
+
+
+

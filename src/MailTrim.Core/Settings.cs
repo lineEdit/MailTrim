@@ -17,4 +17,8 @@ public sealed class AppSettings
     public string Theme { get; set; } = "System";
     public string UpdateRepository { get; set; } = "lineEdit/MailTrim";
     public bool CheckUpdatesOnStartup { get; set; }
+    public bool StartWithWindows { get; set; }
+    public bool CloseToTray { get; set; } = true;
+    public bool NotifyNewMail { get; set; } = true;
 }
+
