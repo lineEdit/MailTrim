@@ -18,7 +18,7 @@ public static class ReaderScript
     public const string Body = """
     (() => {
       if(location.origin!=='https://e.mail.ru') return null;
-      const root=document.querySelector('.letter-body__body-content');
+      const root=document.querySelector('.letter-body__body-content') || document.querySelector('.letter-body__body');
       if(!root) return null;
       const blocks=[]; let text='';
       const flush=()=>{if(text.trim()) blocks.push({text:text.trim().slice(0,20000),image:''});text='';};
@@ -42,3 +42,4 @@ public static class ReaderScript
 
 public sealed record ReaderLetter(string Url, string Sender, string Subject, string Preview, string Date);
 public sealed record ReaderBlock(string Text, string Image);
+

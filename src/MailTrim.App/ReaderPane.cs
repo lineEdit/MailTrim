@@ -25,6 +25,7 @@ public sealed class ReaderPane : Grid
         this.session = session; this.original = original;
         SetResourceReference(BackgroundProperty, "Panel");
         list.SetResourceReference(Control.BackgroundProperty, "Panel"); list.SetResourceReference(Control.ForegroundProperty, "Ink");
+        ScrollViewer.SetHorizontalScrollBarVisibility(list, ScrollBarVisibility.Disabled);
         ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(310) });
         ColumnDefinitions.Add(new ColumnDefinition());
         var left = new DockPanel(); Children.Add(left);
@@ -75,7 +76,7 @@ public sealed class ReaderPane : Grid
             {
                 if (!NavigationPolicy.IsMail(letter.Url) || letters.Any(x => x.Url == letter.Url) || letters.Count >= 500) continue;
                 letters.Add(letter);
-                var panel = new StackPanel { Margin = new Thickness(8), Width = 266 };
+                var panel = new StackPanel { Margin = new Thickness(8), Width = 250 };
                 panel.Children.Add(new TextBlock { Text = letter.Sender + " · " + letter.Date, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis });
                 panel.Children.Add(new TextBlock { Text = letter.Subject, TextWrapping = TextWrapping.Wrap, MaxHeight = 48, Margin = new Thickness(0,4,0,4) });
                 panel.Children.Add(new TextBlock { Text = letter.Preview, TextTrimming = TextTrimming.CharacterEllipsis, Opacity = .65 });
@@ -107,7 +108,7 @@ public sealed class ReaderPane : Grid
             for (var n = 0; n < 40; n++)
             {
                 await Task.Delay(400, lifetime.Token);
-                if (session.View.CoreWebView2.Source != letter.Url) continue;
+                if (!NavigationPolicy.IsMail(session.View.CoreWebView2.Source)) continue;
                 blocks = await Extract<List<ReaderBlock>>(ReaderScript.Body);
                 if (blocks?.Count > 0) break;
             }
@@ -151,5 +152,6 @@ public sealed class ReaderPane : Grid
     }
     private void AddText(string text, double size = 16) => body.Children.Add(new TextBlock { Text = text, FontSize = size, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0,0,0,12) });
 }
+
 
 
