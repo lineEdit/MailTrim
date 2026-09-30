@@ -18,6 +18,7 @@ public sealed class SettingsWindow : Window
     private readonly CheckBox notifications = new() { Content = "Уведомлять о новых письмах" };
     private readonly CheckBox siteNotifications = new() { Content = "Использовать уведомления сайта Mail.ru вместо опроса" };
     private readonly CheckBox updates = new() { Content = "Проверять новые версии при запуске (запрос к GitHub)" };
+    private readonly CheckBox previewUpdates = new() { Content = "Включать предварительные версии (канал разработки)" };
     private readonly ComboBox theme = new() { ItemsSource = new[] { "System", "Light", "Dark" }, Width = 180, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly TextBox repository = new() { MaxLength = 120 };
     private readonly TextBox rules = new() { AcceptsReturn = true, AcceptsTab = true, FontFamily = new System.Windows.Media.FontFamily("Consolas"), FontSize = 12, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, MinHeight = 160 };
@@ -28,6 +29,7 @@ public sealed class SettingsWindow : Window
         network.IsChecked = store.Settings.BlockRequests; cosmetic.IsChecked = store.Settings.CosmeticFilters; aggressive.IsChecked = store.Settings.Aggressive;
         startup.IsChecked = store.Settings.StartWithWindows; tray.IsChecked = store.Settings.CloseToTray; notifications.IsChecked = store.Settings.NotifyNewMail;
         siteNotifications.IsChecked = store.Settings.UseSiteNotifications;
+        previewUpdates.IsChecked = store.Settings.IncludePrereleaseUpdates;
         updates.IsChecked = store.Settings.CheckUpdatesOnStartup; theme.SelectedItem = store.Settings.Theme; repository.Text = store.Settings.UpdateRepository;
         rules.Text = System.Text.Json.JsonSerializer.Serialize(store.Rules, FilterRules.Json);
         var root = new DockPanel { Margin = new Thickness(24) }; Content = root;
@@ -41,9 +43,9 @@ public sealed class SettingsWindow : Window
         main.Children.Add(Note("Дополнительные правила могут скрыть полезные элементы. Если вход или почта не работают, приостановите фильтры кнопкой в главном окне."));
         main.Children.Add(Label("Тема оболочки и предпочтение для сайта")); main.Children.Add(theme);
         main.Children.Add(Note("System — системная, Light — светлая, Dark — тёмная. Веб-почта может использовать свою настройку темы."));
-        main.Children.Add(Label("Репозиторий обновлений: owner/repository")); main.Children.Add(repository); main.Children.Add(updates);
+        main.Children.Add(Label("Репозиторий обновлений: owner/repository")); main.Children.Add(repository); main.Children.Add(updates); main.Children.Add(previewUpdates);
         var check = new Button { Content = "Проверить версию сейчас", HorizontalAlignment = HorizontalAlignment.Left };
-        check.Click += async (_, _) => { check.IsEnabled = false; try { await UpdateChecker.Check(this, store, false, repository.Text.Trim()); } finally { check.IsEnabled = true; } };
+        check.Click += async (_, _) => { check.IsEnabled = false; try { await UpdateChecker.Check(this, store, false, repository.Text.Trim(), previewUpdates.IsChecked == true); } finally { check.IsEnabled = true; } };
         main.Children.Add(check); main.Children.Add(Note("Новая версия открывается на GitHub после подтверждения. Автоматической установки и выполнения загруженных файлов нет."));
         main.Children.Add(Label("Локальные данные"));
         main.Children.Add(Note("Сессии хранятся в %LOCALAPPDATA%\\MailTrim\\Profiles. Журнал содержит только время и коды событий, без адресов, URL, заголовков и содержимого писем."));
@@ -87,7 +89,7 @@ public sealed class SettingsWindow : Window
                 if (RequiresReload && MessageBox.Show(this, "Открытые страницы будут перезагружены. Сохраните незавершённые письма перед продолжением.", "Применить настройки", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;
                 store.SaveRules(rules.Text);
                 store.Settings.BlockRequests = network.IsChecked == true; store.Settings.CosmeticFilters = cosmetic.IsChecked == true; store.Settings.Aggressive = aggressive.IsChecked == true;
-                store.Settings.Theme = (string)theme.SelectedItem; store.Settings.UpdateRepository = repo; store.Settings.CheckUpdatesOnStartup = updates.IsChecked == true;
+                store.Settings.Theme = (string)theme.SelectedItem; store.Settings.UpdateRepository = repo; store.Settings.CheckUpdatesOnStartup = updates.IsChecked == true; store.Settings.IncludePrereleaseUpdates = previewUpdates.IsChecked == true;
                 WindowsStartup.SetEnabled(startup.IsChecked == true);
                 store.Settings.StartWithWindows = startup.IsChecked == true; store.Settings.CloseToTray = tray.IsChecked == true; store.Settings.NotifyNewMail = notifications.IsChecked == true;
                 store.Settings.UseSiteNotifications = siteNotifications.IsChecked == true;

@@ -47,6 +47,20 @@ Check(!SiteNotificationPolicy.CanDeliver(notificationSettings, "https://e.mail.r
 Check(new SavedWindowPosition(-1500, 10, -200, 800, false).IsValid, "window position supports left-hand monitor");
 Check(!new SavedWindowPosition(0, 0, 0, 0, false).IsValid, "reject empty window bounds");
 Check(!new SavedWindowPosition(int.MinValue, 0, int.MaxValue, 700, false).IsValid, "reject overflowing window coordinates");
+var releases = """
+[{"tag_name":"v0.8.0","draft":false,"prerelease":true},
+ {"tag_name":"v99.0.0","draft":true,"prerelease":false},
+ {"tag_name":"v0.10.0","draft":false,"prerelease":true},
+ {"tag_name":"v0.7.0","draft":false,"prerelease":false},
+ {"tag_name":"invalid","draft":false,"prerelease":false}]
+""";
+Check(ReleaseCatalog.Select(releases, true)?.Tag == "v0.10.0", "updates compare numeric versions and skip drafts");
+Check(ReleaseCatalog.Select(releases, false)?.Tag == "v0.7.0", "stable channel excludes prereleases");
+Check(ReleaseCatalog.Select("[]", true) is null, "empty release channel is not a network error");
+Check(ReleaseCatalog.Select("""{"tag_name":"v0.8.0","draft":false,"prerelease":false}""", false)?.Version == new Version(0,8,0,0), "single stable release normalized to assembly version");
+Check(ReleaseCatalog.Select("""[{"tag_name":"v0.8.0","draft":false,"prerelease":true}]""", false) is null, "no stable releases is an empty channel");
+Check(ReleaseCatalog.Select("""[{"tag_name":"v0.8.0","draft":false,"prerelease":true},{"tag_name":"v0.8.0","draft":false,"prerelease":false}]""", true)?.Prerelease == false, "stable release wins same-version tie");
+Check(ReleaseCatalog.Select("""[{"tag_name":"v3.0.0"},{"tag_name":"v5.0.0","draft":null,"prerelease":false}]""", true) is null, "malformed release records cannot become updates");
 var tracker = new NewMailTracker(); var profile = Guid.NewGuid();
 Check(tracker.Observe(profile, ["https://e.mail.ru/inbox/old"]) == 0, "mail notification first snapshot is quiet");
 Check(tracker.Observe(profile, ["https://e.mail.ru/inbox/new", "https://e.mail.ru/inbox/old"]) == 1, "new inbox head notifies once");
