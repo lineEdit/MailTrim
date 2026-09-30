@@ -29,6 +29,29 @@ public sealed class MessageCache
     {
         lock (gate) return ReadFile(PathFor(url)) is { } item && item.Letter.Url == url ? item.Blocks : null;
     }
+    public List<ReaderLetter> Search(string query, CancellationToken token)
+    {
+        query = query.Trim();
+        if (query.Length == 0) return [];
+        string[] paths;
+        lock (gate) paths = Directory.Exists(directory) ? Directory.GetFiles(directory, "*.bin") : [];
+        var found = new List<ReaderLetter>();
+        foreach (var path in paths)
+        {
+            token.ThrowIfCancellationRequested();
+            CacheEntry? entry;
+            lock (gate) entry = ReadFile(path);
+            if (entry is null) continue;
+            if (Matches(entry.Letter, query) || entry.Blocks.Any(b => b.Text.Contains(query, StringComparison.OrdinalIgnoreCase)))
+                found.Add(entry.Letter);
+        }
+        token.ThrowIfCancellationRequested();
+        return found;
+    }
+    public static bool Matches(ReaderLetter letter, string query) =>
+        letter.Sender.Contains(query, StringComparison.OrdinalIgnoreCase)
+        || letter.Subject.Contains(query, StringComparison.OrdinalIgnoreCase)
+        || letter.Preview.Contains(query, StringComparison.OrdinalIgnoreCase);
     private CacheEntry? ReadFile(string path)
     {
         try

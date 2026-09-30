@@ -21,6 +21,7 @@ public sealed class ReaderPane : Grid
     private readonly CancellationTokenSource lifetime = new();
     private bool restoring;
     private bool loading;
+    private readonly TextBox searchBox = new() { MaxLength = 256, ToolTip = "Поиск в кэше: отправитель, тема и текст. Enter — найти.", MinWidth = 160 };
     private int scrollOffset;
     private readonly Dictionary<string, List<ReaderBlock>> cache = [];
     private ReaderLetter? selectedLetter;
@@ -36,6 +37,7 @@ public sealed class ReaderPane : Grid
     public ReaderPane(BrowserSession session, Action original)
     {
         this.session = session; this.original = original;
+        System.Windows.Automation.AutomationProperties.SetName(searchBox, "Поиск в сохранённых письмах");
         SetResourceReference(BackgroundProperty, "Panel");
         list.SetResourceReference(Control.BackgroundProperty, "Panel"); list.SetResourceReference(Control.ForegroundProperty, "Ink");
         ScrollViewer.SetHorizontalScrollBarVisibility(list, ScrollBarVisibility.Disabled);
@@ -61,6 +63,15 @@ public sealed class ReaderPane : Grid
         var more = new Button { Content = "+", ToolTip = "Ещё письма", Padding = new Thickness(8,4,8,4) }; actions.Children.Add(more);
         more.Click += async (_, _) => await LoadList(false, true);
         actions.Children.Add(cacheButton); cacheButton.Click += async (_, _) => await RequestCache();
+        var searchRow = new DockPanel { Margin = new Thickness(4) };
+        var find = new Button { Content = "Найти", Padding = new Thickness(6,4,6,4) };
+        var resetSearch = new Button { Content = "×", ToolTip = "Сбросить поиск", Padding = new Thickness(6,4,6,4) };
+        DockPanel.SetDock(resetSearch, Dock.Right); searchRow.Children.Add(resetSearch);
+        DockPanel.SetDock(find, Dock.Right); searchRow.Children.Add(find); searchRow.Children.Add(searchBox);
+        tools.Children.Add(searchRow);
+        find.Click += async (_, _) => await SearchSaved(searchBox.Text);
+        searchBox.KeyDown += async (_, e) => { if (e.Key == System.Windows.Input.Key.Enter) { e.Handled = true; await SearchSaved(searchBox.Text); } };
+        resetSearch.Click += async (_, _) => await SearchSaved("");
         var clear = new MenuItem { Header = "Удалить зашифрованный кэш этого ящика" };
         cacheButton.ContextMenu = new ContextMenu(); cacheButton.ContextMenu.Items.Add(clear);
         clear.Click += (_, _) => {
@@ -75,6 +86,32 @@ public sealed class ReaderPane : Grid
         DockPanel.SetDock(open, Dock.Top); right.Children.Add(open); open.Click += (_, _) => OpenOriginal();
         right.Children.Add(new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
         AddText("Выберите письмо слева. Ответы, ссылки и вложения доступны в оригинале.");
+    }
+    public async Task SearchSaved(string query)
+    {
+        if (loading || lifetime.IsCancellationRequested) return;
+        query = query.Trim(); searchBox.Text = query;
+        if (query.Length == 0)
+        {
+            restoring = true; list.Items.Clear(); foreach (var letter in letters) list.Items.Add(letter); restoring = false;
+            notice.Text = $"Писем: {letters.Count}. Поиск сброшен.";
+            return;
+        }
+        loading = true; list.IsEnabled = false; searchBox.IsEnabled = false;
+        notice.Text = "Поиск по сохранённым письмам…";
+        try
+        {
+            var found = await Task.Run(() => session.Cache.Search(query, lifetime.Token), lifetime.Token);
+            lifetime.Token.ThrowIfCancellationRequested();
+            foreach (var letter in found) AddLetter(letter);
+            var urls = found.Select(x => x.Url).ToHashSet(StringComparer.Ordinal);
+            var matches = letters.Where(x => urls.Contains(x.Url) || MessageCache.Matches(x, query)).ToArray();
+            restoring = true; list.Items.Clear(); foreach (var letter in matches) list.Items.Add(letter); restoring = false;
+            notice.Text = $"Найдено: {matches.Length}. Текст — только из кэша этого ящика.";
+        }
+        catch (OperationCanceledException) { }
+        catch { notice.Text = "Не удалось выполнить поиск по кэшу."; }
+        finally { loading = false; list.IsEnabled = true; searchBox.IsEnabled = true; }
     }
     public async Task Start()
     {
@@ -108,6 +145,7 @@ public sealed class ReaderPane : Grid
     {
         if (batch is not null) { batch.Cancel(); return; }
         if (loading) return;
+        if (searchBox.Text.Length > 0) await SearchSaved("");
         if (MessageBox.Show(Window.GetWindow(this), "Заранее загрузить весь ящик через Mail.ru?\n\nПриложение обойдёт стандартные и доступные пользовательские папки, включая спам и корзину. Открытие писем может пометить их прочитанными.\n\nТекст и ссылки на картинки сохранятся на этом компьютере в кэше, зашифрованном для вашей учётной записи Windows. Картинки и вложения автоматически не скачиваются. Лимит — 512 МБ на профиль. Существующий кэш будет дополнен.\n\nЗагрузка может занять долгое время. Её можно остановить; сохранённое останется. Начать?", "Кэш всего ящика", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
         batch = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
         loading = true; list.IsEnabled = false; cacheButton.Content = "Остановить";
@@ -137,6 +175,7 @@ public sealed class ReaderPane : Grid
     private async Task LoadList(bool refresh, bool more = false)
     {
         if (loading || lifetime.IsCancellationRequested) return;
+        if (searchBox.Text.Length > 0) await SearchSaved("");
         loading = true; list.IsEnabled = false;
         try
         {

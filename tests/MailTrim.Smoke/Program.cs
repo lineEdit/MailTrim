@@ -176,6 +176,14 @@ internal static class Program
                 a.View.CoreWebView2.NavigationStarting += (_, _) => readerNavigations++;
                 readerList.SelectedIndex = -1; readerList.SelectedIndex = 0;
                 Check(readerList.IsEnabled && readerNavigations == 0 && readerBody.Children.OfType<TextBlock>().Any(t => t.Text.Contains("Safe text")), "cached letter reopens synchronously without network navigation");
+                await pane.SearchSaved("missing-search-fixture-9347");
+                Check(readerList.Items.Count == 0 && readerNavigations == 0, "cache search shows empty result without navigating mail");
+                await pane.SearchSaved("sAfE TeXt");
+                Check(readerList.Items.Count == 1 && readerNavigations == 0, "case-insensitive search finds cached body locally");
+                readerList.SelectedIndex = 0;
+                Check(readerList.IsEnabled && readerNavigations == 0 && readerBody.Children.OfType<TextBlock>().Any(t => t.Text.Contains("Safe text")), "search result opens from cache without network");
+                await pane.SearchSaved(""); readerList.SelectedIndex = 0;
+                Check(readerList.Items.Count == 1, "clearing search restores original reader list");
                 pane.UpdateLayout();
                 var readerBitmap = new RenderTargetBitmap((int)pane.ActualWidth, (int)pane.ActualHeight, 96, 96, PixelFormats.Pbgra32);
                 readerBitmap.Render(pane); var readerEncoder = new PngBitmapEncoder(); readerEncoder.Frames.Add(BitmapFrame.Create(readerBitmap));
@@ -191,6 +199,13 @@ internal static class Program
                 var otherId = Guid.NewGuid(); var otherDir = Path.Combine(root, "ReaderCache", otherId.ToString("N")); Directory.CreateDirectory(otherDir);
                 File.Copy(cachedFile, Path.Combine(otherDir, Path.GetFileName(cachedFile)));
                 Check(new MessageCache(root, otherId).Get(readerRows[0].Url) is null, "cache cannot be decrypted as a different mailbox profile");
+                Check(new MessageCache(root, otherId).Search("Safe text", CancellationToken.None).Count == 0, "search cannot read another account encrypted cache");
+                using (var searchCancellation = new CancellationTokenSource())
+                {
+                    searchCancellation.Cancel(); bool searchStopped = false;
+                    try { reopenedCache.Search("Safe text", searchCancellation.Token); } catch (OperationCanceledException) { searchStopped = true; }
+                    Check(searchStopped, "cache search respects cancellation");
+                }
                 var resumed = new ReaderPane(a, () => { }); host.Children.Add(resumed); await resumed.Start();
                 Check(((DockPanel)resumed.Children[0]).Children.OfType<ListBox>().Single().Items.Count == 1, "reader restores cached list after reopening");
                 Check(((DockPanel)resumed.Children[0]).Children.OfType<ListBox>().Single().SelectedItem is ReaderLetter, "reader restores selected message independently for profile");
