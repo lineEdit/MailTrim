@@ -39,7 +39,7 @@ public static class UpdatePackage
         {
             token.ThrowIfCancellationRequested();
             var path = Path.Combine(destination, entry.FullName.Replace('/', Path.DirectorySeparatorChar));
-            if (entry.FullName.EndsWith('/')) { Directory.CreateDirectory(path); continue; }
+            if (entry.FullName.EndsWith('/') || entry.FullName.EndsWith('\\')) { Directory.CreateDirectory(path); continue; }
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             entry.ExtractToFile(path);
         }

@@ -95,6 +95,9 @@ try
         catch (InvalidDataException) { rejected = true; }
         Check(rejected, "reject unsafe update entry " + unsafeName);
     }
+    var windowsDirectory = MakePackage("windows-directory", "runtimes\\win-x64\\");
+    UpdatePackage.Extract(windowsDirectory, Hash(windowsDirectory), Path.Combine(updateScratch, "windows-dir"), default);
+    Check(Directory.Exists(Path.Combine(updateScratch, "windows-dir", "runtimes", "win-x64")), "Windows ZIP directory separators supported");
     var badHash = false;
     try { UpdatePackage.Extract(valid, new string('0', 64), Path.Combine(updateScratch, "bad-hash"), default); }
     catch (InvalidDataException) { badHash = true; }
