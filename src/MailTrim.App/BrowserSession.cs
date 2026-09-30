@@ -68,10 +68,18 @@ public sealed class BrowserSession : IDisposable
             if (!e.IsSuccess) store.Log("navigation_failed");
         };
         core.ServerCertificateErrorDetected += (_, e) => e.Action = CoreWebView2ServerCertificateErrorAction.Cancel;
+        // Let WebView2 own notification display/click/close. Drop unsolicited origins,
+        // muted notifications and the alternate polling mode, even with a prior permission.
+        core.NotificationReceived += (_, e) => e.Handled = !SiteNotificationPolicy.CanDeliver(store.Settings, e.SenderOrigin);
         core.PermissionRequested += async (_, e) =>
         {
             e.SavesInProfile = false;
             e.State = CoreWebView2PermissionState.Deny;
+            if (e.PermissionKind == CoreWebView2PermissionKind.Notifications)
+            {
+                if (SiteNotificationPolicy.CanDeliver(store.Settings, e.Uri)) e.State = CoreWebView2PermissionState.Allow;
+                return;
+            }
             if (!e.IsUserInitiated || !NavigationPolicy.IsInternal(e.Uri)) return;
             using var deferral = e.GetDeferral();
             await owner.Dispatcher.InvokeAsync(() =>

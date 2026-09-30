@@ -30,6 +30,7 @@ public sealed class AppSettings
     public bool StartWithWindows { get; set; }
     public bool CloseToTray { get; set; } = true;
     public bool NotifyNewMail { get; set; } = true;
+    public bool UseSiteNotifications { get; set; }
 }
 
 

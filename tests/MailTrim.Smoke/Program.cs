@@ -108,6 +108,26 @@ internal static class Program
                 cm.AddOrUpdateCookie(cm.CreateCookie("mailtrim_test", "isolated", ".mail.ru", "/"));
                 Check((await cm.GetCookiesAsync("https://e.mail.ru/")).Any(c => c.Name == "mailtrim_test"), "cookie in first profile");
                 Check(!(await b.View.CoreWebView2.CookieManager.GetCookiesAsync("https://e.mail.ru/")).Any(c => c.Name == "mailtrim_test"), "second profile isolated");
+                store.Settings.UseSiteNotifications = true;
+                await a.View.CoreWebView2.ExecuteScriptAsync("Notification.requestPermission().then(p=>window.fixturePermission=p); void 0");
+                await WaitForScript(a, "window.fixturePermission === 'granted'");
+                var notificationDecision = new TaskCompletionSource<bool>();
+                EventHandler<CoreWebView2NotificationReceivedEventArgs> captureNotification = (_, e) =>
+                {
+                    notificationDecision.TrySetResult(e.Handled);
+                    e.Handled = true; // No real Windows banner during the test.
+                    e.Notification.ReportClosed();
+                };
+                a.View.CoreWebView2.NotificationReceived += captureNotification;
+                await a.View.CoreWebView2.ExecuteScriptAsync("new Notification('MailTrim synthetic test'); void 0");
+                Check(!await notificationDecision.Task.WaitAsync(TimeSpan.FromSeconds(10)), "opted-in mail notification is delegated to browser UI");
+                notificationDecision = new TaskCompletionSource<bool>(); store.Settings.NotifyNewMail = false;
+                await a.View.CoreWebView2.ExecuteScriptAsync("new Notification('MailTrim muted synthetic test'); void 0");
+                Check(await notificationDecision.Task.WaitAsync(TimeSpan.FromSeconds(10)), "mute suppresses site notifications despite previously granted permission");
+                notificationDecision = new TaskCompletionSource<bool>(); store.Settings.NotifyNewMail = true; store.Settings.UseSiteNotifications = false;
+                await a.View.CoreWebView2.ExecuteScriptAsync("new Notification('MailTrim polling synthetic test'); void 0");
+                Check(await notificationDecision.Task.WaitAsync(TimeSpan.FromSeconds(10)), "polling mode suppresses browser notifications to avoid duplicates");
+                a.View.CoreWebView2.NotificationReceived -= captureNotification;
                 await Navigate(a, "https://account.mail.ru/__mailtrim_fixture");
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('mailtrim-cosmetic-style') === null") == "true", "no cosmetics on login origin");
                 var oldSource = a.View.CoreWebView2.Source;

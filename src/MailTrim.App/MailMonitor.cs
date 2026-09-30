@@ -50,6 +50,7 @@ public sealed class MailMonitor(LocalStore store, Grid host, Action<int> notify,
                     core.NavigationStarting += (_, e) => e.Cancel = !NavigationPolicy.IsInternal(e.Uri);
                     core.NewWindowRequested += (_, e) => e.Handled = true;
                     core.PermissionRequested += (_, e) => { e.State = CoreWebView2PermissionState.Deny; e.SavesInProfile = false; };
+                    core.NotificationReceived += (_, e) => e.Handled = true;
                     core.DownloadStarting += (_, e) => e.Cancel = true;
                     core.ServerCertificateErrorDetected += (_, e) => e.Action = CoreWebView2ServerCertificateErrorAction.Cancel;
                     core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All, CoreWebView2WebResourceRequestSourceKinds.All);
@@ -67,7 +68,7 @@ public sealed class MailMonitor(LocalStore store, Grid host, Action<int> notify,
                         if (urls.Length == 0 && snapshot?.Ready != true) continue;
                         status(profile.Id, new("Проверено", snapshot?.Unread, DateTimeOffset.Now)); completed = true;
                         var added = tracker.Observe(profile.Id, urls);
-                        if (added > 0 && store.Settings.NotifyNewMail) notify(added);
+                        if (added > 0 && store.Settings.NotifyNewMail && !store.Settings.UseSiteNotifications) notify(added);
                         break;
                     }
                     if (!completed) status(profile.Id, new(System.Net.NetworkInformation.NetworkInterface.GetIsNetworkAvailable() ? "Не удалось проверить" : "Нет сети", null, null));

@@ -36,6 +36,14 @@ var script = CosmeticScript.Create(new FilterRules { HideSelectors = ["[data-tes
 Check(script.Contains("window.top !== window") && script.Contains("location.origin !== 'https://e.mail.ru'"), "cosmetic origin and frame guard");
 Check(!script.Contains("fetch(") && !script.Contains("chrome.webview"), "no script network/native bridge");
 Check(CosmeticScript.Create(rules, false, true).Contains("const selectors = [];"), "paused cosmetics empty");
+var notificationSettings = new AppSettings { UseSiteNotifications = true };
+Check(SiteNotificationPolicy.CanDeliver(notificationSettings, "https://e.mail.ru/"), "opted-in official mail can notify");
+foreach (var origin in new[] { "https://e.mail.ru.evil.test", "https://account.mail.ru", "http://e.mail.ru", "https://e.mail.ru:444", "https://user@e.mail.ru" })
+    Check(!SiteNotificationPolicy.CanDeliver(notificationSettings, origin), "reject notification origin " + origin);
+notificationSettings.NotifyNewMail = false;
+Check(!SiteNotificationPolicy.CanDeliver(notificationSettings, "https://e.mail.ru"), "mute rejects site notifications");
+notificationSettings.NotifyNewMail = true; notificationSettings.UseSiteNotifications = false;
+Check(!SiteNotificationPolicy.CanDeliver(notificationSettings, "https://e.mail.ru"), "polling and site notifications are mutually exclusive");
 var tracker = new NewMailTracker(); var profile = Guid.NewGuid();
 Check(tracker.Observe(profile, ["https://e.mail.ru/inbox/old"]) == 0, "mail notification first snapshot is quiet");
 Check(tracker.Observe(profile, ["https://e.mail.ru/inbox/new", "https://e.mail.ru/inbox/old"]) == 1, "new inbox head notifies once");
