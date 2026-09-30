@@ -11,6 +11,7 @@ public partial class MainWindow : Window
 {
     private readonly LocalStore store;
     private readonly Dictionary<Guid, BrowserSession> sessions = [];
+    private ReaderPane? reader;
     private bool paused;
     private bool busy;
     private BrowserSession? Current => Profiles.SelectedItem is AccountProfile p ? sessions.GetValueOrDefault(p.Id) : null;
@@ -26,16 +27,31 @@ public partial class MainWindow : Window
             if (store.RulesUpgradeAvailable) MessageBox.Show(this, "Доступны новые фильтры рекламы. Ваш изменённый набор сохранён. Чтобы использовать новый набор: Настройки → Правила → Встроенные правила → Сохранить и перезагрузить. Это заменит ваши изменения правил.", "Обновление фильтров");
             if (store.Settings.CheckUpdatesOnStartup) await UpdateChecker.Check(this, store, true);
         };
-        Closed += (_, _) => { foreach (var session in sessions.Values) session.Dispose(); store.Log("app_closed"); };
+        Closed += (_, _) => { CloseReader(); foreach (var session in sessions.Values) session.Dispose(); store.Log("app_closed"); };
         Closing += (_, e) => { if (busy) { e.Cancel = true; Status.Text = "Дождитесь завершения текущей операции."; } };
         PreviewKeyDown += (_, e) =>
         {
-            if (e.Key == Key.F5) { Current?.View.Reload(); e.Handled = true; }
-            if (e.SystemKey == Key.Left && Current?.View.CanGoBack == true) { Current.View.GoBack(); e.Handled = true; }
+            if (e.Key == Key.F5) { CloseReader(); Current?.View.Reload(); e.Handled = true; }
+            if (e.SystemKey == Key.Left && Current?.View.CanGoBack == true) { CloseReader(); Current.View.GoBack(); e.Handled = true; }
         };
         store.Log("app_started");
     }
 
+    private void CloseReader()
+    {
+        reader?.Close(); reader = null; ReaderHost.Children.Clear();
+        ReaderHost.Visibility = Visibility.Collapsed; BrowserHost.Visibility = Visibility.Visible;
+        ReaderButton.Content = "Только важное";
+    }
+    private async void Reader_Click(object sender, RoutedEventArgs e)
+    {
+        if (reader is not null) { CloseReader(); return; }
+        if (Current?.View.CoreWebView2 is null) return;
+        reader = new ReaderPane(Current, CloseReader);
+        ReaderHost.Children.Add(reader); BrowserHost.Visibility = Visibility.Hidden;
+        ReaderHost.Visibility = Visibility.Visible; ReaderButton.Content = "Оригинал";
+        await reader.Start();
+    }
     private async Task Run(Func<Task> action)
     {
         if (busy) return;
@@ -60,6 +76,7 @@ public partial class MainWindow : Window
     }
     private async Task ShowProfile()
     {
+        CloseReader();
         foreach (var s in sessions.Values) s.SetActive(false);
         EmptyLabel.Visibility = Profiles.SelectedItem is AccountProfile ? Visibility.Collapsed : Visibility.Visible;
         if (Profiles.SelectedItem is not AccountProfile profile) return;
@@ -82,15 +99,15 @@ public partial class MainWindow : Window
         ProfileActionsButton.ContextMenu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
         ProfileActionsButton.ContextMenu.IsOpen = true;
     }
-    private void Back_Click(object sender, RoutedEventArgs e) { if (Current?.View.CanGoBack == true) Current.View.GoBack(); }
-    private void Reload_Click(object sender, RoutedEventArgs e) { if (Current is { } s) s.View.Reload(); else _ = Run(ShowProfile); }
-    private void Home_Click(object sender, RoutedEventArgs e) => Current?.View.CoreWebView2.Navigate("https://e.mail.ru/inbox/");
+    private void Back_Click(object sender, RoutedEventArgs e) { CloseReader(); if (Current?.View.CanGoBack == true) Current.View.GoBack(); }
+    private void Reload_Click(object sender, RoutedEventArgs e) { CloseReader(); if (Current is { } s) s.View.Reload(); else _ = Run(ShowProfile); }
+    private void Home_Click(object sender, RoutedEventArgs e) { CloseReader(); Current?.View.CoreWebView2.Navigate("https://e.mail.ru/inbox/"); }
     private async void Pause_Click(object sender, RoutedEventArgs e)
     {
         if (MessageBox.Show(this, "Фильтры будут переключены, а открытые страницы перезагружены. Сохраните незавершённые письма перед продолжением.", "Переключение фильтров", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;
         await Run(async () =>
         {
-            paused = !paused; PauseButton.Content = paused ? "Фильтры: выкл" : "Фильтры: вкл";
+            CloseReader(); paused = !paused; PauseButton.Content = paused ? "Фильтры: выкл" : "Фильтры: вкл";
             PauseButton.ToolTip = paused ? "Включить фильтры" : "Приостановить фильтры";
             foreach (var s in sessions.Values) await s.ApplySettings();
         });
@@ -122,7 +139,7 @@ public partial class MainWindow : Window
     {
         if (Current is not { } current) return;
         if (MessageBox.Show(this, "Выйти из этого ящика и удалить его локальные cookies, кэш и данные сайтов? Несохранённый текст будет потерян. Письма на сервере останутся.", "Очистка сессии", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-        await Run(async () => { await current.ClearData(); current.View.CoreWebView2.Navigate("https://e.mail.ru/inbox/"); store.Log("session_cleared"); });
+        await Run(async () => { CloseReader(); await current.ClearData(); current.View.CoreWebView2.Navigate("https://e.mail.ru/inbox/"); store.Log("session_cleared"); });
     }
     private async void Remove_Click(object sender, RoutedEventArgs e)
     {
@@ -130,7 +147,7 @@ public partial class MainWindow : Window
         if (MessageBox.Show(this, "Удалить профиль и очистить его локальную сессию? Серверный ящик и письма не удаляются.", "Удаление профиля", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         await Run(async () =>
         {
-            await current.ClearData(); current.Dispose(); BrowserHost.Children.Remove(current.View); sessions.Remove(p.Id);
+            CloseReader(); await current.ClearData(); current.Dispose(); BrowserHost.Children.Remove(current.View); sessions.Remove(p.Id);
             store.Settings.Profiles.Remove(p); store.Settings.ActiveProfile = store.Settings.Profiles.FirstOrDefault()?.Id; store.Save();
             RefreshProfiles(store.Settings.ActiveProfile); await ShowProfile();
         });
@@ -138,7 +155,7 @@ public partial class MainWindow : Window
     private async void Settings_Click(object sender, RoutedEventArgs e)
     {
         if (new SettingsWindow(store) { Owner = this }.ShowDialog() != true) return;
-        await Run(async () => { ApplyTheme(); foreach (var s in sessions.Values) await s.ApplySettings(); });
+        await Run(async () => { CloseReader(); ApplyTheme(); foreach (var s in sessions.Values) await s.ApplySettings(); });
     }
     private void ApplyTheme()
     {
@@ -148,3 +165,4 @@ public partial class MainWindow : Window
         for (int i = 0; i < keys.Length; i++) Application.Current.Resources[keys[i]] = new SolidColorBrush((Color)ColorConverter.ConvertFromString(colors[i]));
     }
 }
+

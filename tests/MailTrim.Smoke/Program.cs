@@ -98,7 +98,22 @@ internal static class Program
                 var sentinel = "private-email@example.org?token=secret";
                 store.Log(sentinel); store.Log("test_event");
                 Check(!File.ReadAllText(Path.Combine(root, "events.log")).Contains(sentinel), "log rejects sensitive strings");
-                var shell = new MainWindow(store) { Left = -20000, Top = -20000, WindowStartupLocation = WindowStartupLocation.Manual, ShowActivated = false, ShowInTaskbar = false };
+                await Navigate(a, "https://e.mail.ru/__mailtrim_reader");
+                var readerRows = System.Text.Json.JsonSerializer.Deserialize<List<ReaderLetter>>(await a.View.CoreWebView2.ExecuteScriptAsync(ReaderScript.List), FilterRules.Json)!;
+                Check(readerRows.Count == 1 && readerRows[0].Subject == "Subject", "reader extracts real message anchors only");
+                var readerBlocks = System.Text.Json.JsonSerializer.Deserialize<List<ReaderBlock>>(await a.View.CoreWebView2.ExecuteScriptAsync(ReaderScript.Body), FilterRules.Json)!;
+                Check(readerBlocks.Any(x => x.Text.Contains("Safe text")) && !readerBlocks.Any(x => x.Text.Contains("excluded script") || x.Text.Contains("Hidden text")), "reader excludes executable and hidden content");
+                Check(readerBlocks.All(x => x.Image.Length == 0), "reader rejects data and javascript image URLs");
+                var pane = new ReaderPane(a, () => { }); host.Children.Add(pane); a.View.Visibility = Visibility.Hidden; b.View.Visibility = Visibility.Hidden;
+                await pane.Start();
+                var readerList = ((DockPanel)pane.Children[0]).Children.OfType<ListBox>().Single();
+                Check(readerList.Items.Count == 1, "native reader displays extracted list");
+                readerList.SelectedIndex = 0;
+                for (int i = 0; i < 100 && !readerList.IsEnabled; i++) await Task.Delay(100);
+                var readerBody = (StackPanel)((ScrollViewer)((DockPanel)pane.Children[1]).Children[1]).Content;
+                Check(readerBody.Children.OfType<TextBlock>().Any(t => t.Text.Contains("Safe text")), "native reader renders selected message");
+                pane.Close(); Check(readerList.Items.Count == 0 && readerBody.Children.Count == 0, "reader clears message memory on close");
+                host.Children.Remove(pane);                var shell = new MainWindow(store) { Left = -20000, Top = -20000, WindowStartupLocation = WindowStartupLocation.Manual, ShowActivated = false, ShowInTaskbar = false };
                 shell.Show();
                 var browserHost = (Grid)shell.FindName("BrowserHost");
                 for (var i = 0; i < 100 && (!shell.IsEnabled || browserHost.Children.Count == 0); i++) await Task.Delay(100);
@@ -122,7 +137,11 @@ internal static class Program
     {
         session.View.CoreWebView2.WebResourceRequested += (_, e) =>
         {
-            if (e.Request.Uri.EndsWith("/__mailtrim_fixture", StringComparison.Ordinal))
+            if (e.Request.Uri.EndsWith("/__mailtrim_reader", StringComparison.Ordinal))
+                e.Response = session.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes("""
+                <html><body><a class="js-letter-list-item" href="https://e.mail.ru/__mailtrim_reader"><span title="sender">Sender</span><span>Subject</span><span>Preview</span><span>12:00</span></a>
+                <div class="js-letter-list-item">Advertisement</div><div class="letter-body__body-content"><p>Safe text &lt;script&gt;</p><div hidden>Hidden text</div><script type="text/plain">excluded script</script><img src="data:text/plain,bad"><img src="javascript:void(0)"></div></body></html>
+                """)), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");            if (e.Request.Uri.EndsWith("/__mailtrim_fixture", StringComparison.Ordinal))
                 e.Response = session.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "mail-ads.html")))), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
         };
     }
@@ -149,3 +168,4 @@ internal static class Program
         Console.WriteLine("PASS " + name);
     }
 }
+
