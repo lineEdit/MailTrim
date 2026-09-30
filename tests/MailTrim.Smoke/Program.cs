@@ -108,10 +108,17 @@ internal static class Program
                 await pane.Start();
                 var readerList = ((DockPanel)pane.Children[0]).Children.OfType<ListBox>().Single();
                 Check(readerList.Items.Count == 1, "native reader displays extracted list");
+                var completedReaderNavigation = false;
+                a.View.CoreWebView2.NavigationCompleted += (_, _) => completedReaderNavigation = true;
                 readerList.SelectedIndex = 0;
                 for (int i = 0; i < 100 && !readerList.IsEnabled; i++) await Task.Delay(100);
                 var readerBody = (StackPanel)((ScrollViewer)((DockPanel)pane.Children[1]).Children[1]).Content;
                 Check(readerBody.Children.OfType<TextBlock>().Any(t => t.Text.Contains("Safe text")), "native reader renders message after canonical URL change with fallback body container");
+                Check(!completedReaderNavigation, "reader displays text before slow image finishes loading");
+                var readerNavigations = 0;
+                a.View.CoreWebView2.NavigationStarting += (_, _) => readerNavigations++;
+                readerList.SelectedIndex = -1; readerList.SelectedIndex = 0;
+                Check(readerList.IsEnabled && readerNavigations == 0 && readerBody.Children.OfType<TextBlock>().Any(t => t.Text.Contains("Safe text")), "cached letter reopens synchronously without network navigation");
                 pane.Close(); Check(readerList.Items.Count == 0 && readerBody.Children.Count == 0, "reader clears message memory on close");
                 host.Children.Remove(pane);                var shell = new MainWindow(store) { Left = -20000, Top = -20000, WindowStartupLocation = WindowStartupLocation.Manual, ShowActivated = false, ShowInTaskbar = false };
                 shell.Show();
@@ -135,12 +142,17 @@ internal static class Program
     }
     private static void ConfigureFixture(BrowserSession session)
     {
-        session.View.CoreWebView2.WebResourceRequested += (_, e) =>
+        session.View.CoreWebView2.WebResourceRequested += async (_, e) =>
         {
-            if (e.Request.Uri.EndsWith("/__mailtrim_reader", StringComparison.Ordinal))
+            if (e.Request.Uri.EndsWith("/__mailtrim_slow_image", StringComparison.Ordinal))
+            {
+                using var deferred = e.GetDeferral();
+                await Task.Delay(3500);
+                e.Response = session.View.CoreWebView2.Environment.CreateWebResourceResponse(null, 404, "Not found", "Cache-Control: no-store");
+            }            if (e.Request.Uri.EndsWith("/__mailtrim_reader", StringComparison.Ordinal))
                 e.Response = session.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes("""
                 <html><body><a class="js-letter-list-item" href="https://e.mail.ru/__mailtrim_reader"><span title="sender">Sender</span><span>Subject</span><span>Preview</span><span>12:00</span></a>
-                <script>history.replaceState(null,"",location.pathname+"?canonical=1#message");</script><div class="js-letter-list-item">Advertisement</div><div class="letter-body__body"><p>Safe text &lt;script&gt;</p><div hidden>Hidden text</div><script type="text/plain">excluded script</script><img src="data:text/plain,bad"><img src="javascript:void(0)"></div></body></html>
+                <script>history.replaceState(null,"",location.pathname+"?canonical=1#message");</script><div class="js-letter-list-item">Advertisement</div><div class="letter-body__body"><p>Safe text &lt;script&gt;</p><img width="1" height="1" src="https://e.mail.ru/__mailtrim_slow_image"><div hidden>Hidden text</div><script type="text/plain">excluded script</script><img src="data:text/plain,bad"><img src="javascript:void(0)"></div></body></html>
                 """)), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");            if (e.Request.Uri.EndsWith("/__mailtrim_fixture", StringComparison.Ordinal))
                 e.Response = session.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "mail-ads.html")))), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
         };
@@ -168,5 +180,6 @@ internal static class Program
         Console.WriteLine("PASS " + name);
     }
 }
+
 
 

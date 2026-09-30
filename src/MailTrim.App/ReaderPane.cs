@@ -20,6 +20,14 @@ public sealed class ReaderPane : Grid
     private readonly CancellationTokenSource lifetime = new();
     private bool loading;
     private int scrollOffset;
+    private readonly Dictionary<string, List<ReaderBlock>> cache = [];
+    private ReaderLetter? selectedLetter;
+    public void OpenOriginal()
+    {
+        if (selectedLetter is { } letter && session.View.CoreWebView2.Source != letter.Url)
+            session.View.CoreWebView2.Navigate(letter.Url);
+        original();
+    }
     public ReaderPane(BrowserSession session, Action original)
     {
         this.session = session; this.original = original;
@@ -38,12 +46,12 @@ public sealed class ReaderPane : Grid
         list.SelectionChanged += async (_, _) => { if (list.SelectedItem is ListBoxItem { Tag: ReaderLetter letter }) await Read(letter); };
         var right = new DockPanel(); SetColumn(right, 1); Children.Add(right);
         var open = new Button { Content = "Открыть в Mail.ru · ответить / вложения", HorizontalAlignment = HorizontalAlignment.Left };
-        DockPanel.SetDock(open, Dock.Top); right.Children.Add(open); open.Click += (_, _) => original();
+        DockPanel.SetDock(open, Dock.Top); right.Children.Add(open); open.Click += (_, _) => OpenOriginal();
         right.Children.Add(new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
         AddText("Выберите письмо слева. Ответы, ссылки и вложения доступны в оригинале.");
     }
     public async Task Start() => await LoadList(false);
-    public void Close() { lifetime.Cancel(); letters.Clear(); list.Items.Clear(); body.Children.Clear(); }
+    public void Close() { lifetime.Cancel(); cache.Clear(); selectedLetter = null; letters.Clear(); list.Items.Clear(); body.Children.Clear(); }
     private async Task<T?> Extract<T>(string script) => JsonSerializer.Deserialize<T>(await session.View.CoreWebView2.ExecuteScriptAsync(script), FilterRules.Json);
     private async Task LoadList(bool refresh, bool more = false)
     {
@@ -71,7 +79,7 @@ public sealed class ReaderPane : Grid
                 if (found?.Count > 0) break;
             }
             lifetime.Token.ThrowIfCancellationRequested();
-            if (refresh) { letters.Clear(); list.Items.Clear(); body.Children.Clear(); }
+            if (refresh) { cache.Clear(); selectedLetter = null; letters.Clear(); list.Items.Clear(); body.Children.Clear(); }
             foreach (var letter in found ?? [])
             {
                 if (!NavigationPolicy.IsMail(letter.Url) || letters.Any(x => x.Url == letter.Url) || letters.Count >= 500) continue;
@@ -91,28 +99,43 @@ public sealed class ReaderPane : Grid
     private async Task Read(ReaderLetter letter)
     {
         if (loading || lifetime.IsCancellationRequested || !NavigationPolicy.IsMail(letter.Url)) return;
+        selectedLetter = letter;
         loading = true; list.IsEnabled = false; body.Children.Clear(); AddText("Загрузка письма…");
         try
         {
-            // Navigate via the official page. Reading can mark a letter as read, just as in Mail.ru.
-            var navigated = new TaskCompletionSource<bool>();
-            void Completed(object? sender, Microsoft.Web.WebView2.Core.CoreWebView2NavigationCompletedEventArgs args) => navigated.TrySetResult(args.IsSuccess);
-            session.View.CoreWebView2.NavigationCompleted += Completed;
-            try
+            List<ReaderBlock>? blocks;
+            if (!cache.TryGetValue(letter.Url, out blocks))
             {
-                session.View.CoreWebView2.Navigate(letter.Url);
-                if (!await navigated.Task.WaitAsync(TimeSpan.FromSeconds(20), lifetime.Token)) throw new IOException();
-            }
-            finally { session.View.CoreWebView2.NavigationCompleted -= Completed; }
-            List<ReaderBlock>? blocks = null;
-            for (var n = 0; n < 40; n++)
-            {
-                await Task.Delay(400, lifetime.Token);
-                if (!NavigationPolicy.IsMail(session.View.CoreWebView2.Source)) continue;
-                blocks = await Extract<List<ReaderBlock>>(ReaderScript.Body);
-                if (blocks?.Count > 0) break;
-            }
-            lifetime.Token.ThrowIfCancellationRequested();
+                // DOMContentLoaded belongs to the new document. Do not wait for images/ads
+                // (NavigationCompleted), and never extract the previous document during navigation.
+                var ready = new TaskCompletionSource();
+                ulong? navigationId = null;
+                void Started(object? sender, Microsoft.Web.WebView2.Core.CoreWebView2NavigationStartingEventArgs args) => navigationId = args.NavigationId;
+                void DomReady(object? sender, Microsoft.Web.WebView2.Core.CoreWebView2DOMContentLoadedEventArgs args) { if (navigationId == args.NavigationId) ready.TrySetResult(); }
+                session.View.CoreWebView2.NavigationStarting += Started;
+                session.View.CoreWebView2.DOMContentLoaded += DomReady;
+                try
+                {
+                    session.View.CoreWebView2.Navigate(letter.Url);
+                    await ready.Task.WaitAsync(TimeSpan.FromSeconds(20), lifetime.Token);
+                }
+                finally { session.View.CoreWebView2.NavigationStarting -= Started; session.View.CoreWebView2.DOMContentLoaded -= DomReady; }
+                for (var n = 0; n < 80; n++)
+                {
+                    lifetime.Token.ThrowIfCancellationRequested();
+                    if (NavigationPolicy.IsMail(session.View.CoreWebView2.Source))
+                        blocks = await Extract<List<ReaderBlock>>(ReaderScript.Body);
+                    if (blocks?.Count > 0) break;
+                    await Task.Delay(150, lifetime.Token);
+                }
+                lifetime.Token.ThrowIfCancellationRequested();
+                if (blocks?.Count > 0 && blocks.Sum(x => x.Text.Length + x.Image.Length) <= 500_000)
+                {
+                    while (cache.Count >= 12 || cache.Values.Sum(v => v.Sum(x => x.Text.Length + x.Image.Length)) > 500_000)
+                        cache.Remove(cache.Keys.First());
+                    cache[letter.Url] = blocks;
+                }
+            }            lifetime.Token.ThrowIfCancellationRequested();
             body.Children.Clear(); AddText(letter.Subject, 24); AddText(letter.Sender + " · " + letter.Date, 13);
             if (blocks is null || blocks.Count == 0) AddText("Не удалось извлечь содержимое. Откройте письмо в Mail.ru.");
             foreach (var block in blocks ?? [])
@@ -152,6 +175,8 @@ public sealed class ReaderPane : Grid
     }
     private void AddText(string text, double size = 16) => body.Children.Add(new TextBlock { Text = text, FontSize = size, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0,0,0,12) });
 }
+
+
 
 
 

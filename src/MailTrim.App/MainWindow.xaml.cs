@@ -45,7 +45,7 @@ public partial class MainWindow : Window
     }
     private async void Reader_Click(object sender, RoutedEventArgs e)
     {
-        if (reader is not null) { CloseReader(); return; }
+        if (reader is not null) { reader.OpenOriginal(); return; }
         if (Current?.View.CoreWebView2 is null) return;
         reader = new ReaderPane(Current, CloseReader);
         ReaderHost.Children.Add(reader); BrowserHost.Visibility = Visibility.Hidden;
@@ -165,4 +165,5 @@ public partial class MainWindow : Window
         for (int i = 0; i < keys.Length; i++) Application.Current.Resources[keys[i]] = new SolidColorBrush((Color)ColorConverter.ConvertFromString(colors[i]));
     }
 }
+
 
