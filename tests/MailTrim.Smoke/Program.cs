@@ -212,9 +212,22 @@ internal static class Program
                 Check(readerList.IsEnabled && readerNavigations == 0 && readerBody.Children.OfType<TextBlock>().Any(t => t.Text.Contains("Safe text")), "search result opens from cache without network");
                 await pane.SearchSaved(""); readerList.SelectedIndex = 0;
                 Check(readerList.Items.Count == 1, "clearing search restores original reader list");
-                var beforeReplyNavigation = readerNavigations;
+                var browserParentBeforeReply = a.View.Parent;
                 await pane.PerformAction(ReaderAction.Reply);
-                Check(originalRequests == 0 && readerNavigations == beforeReplyNavigation && readerList.SelectedIndex == 0, "reply hint preserves reader without navigation or mode switch");
+                Check(originalRequests == 0 && pane.IsReplyVisible && a.ReaderReplyOpen && readerList.SelectedIndex == 0, "reply opens alongside list without leaving reader mode");
+                Check(a.View.Parent != browserParentBeforeReply && a.View.Visibility == Visibility.Visible && !((DockPanel)pane.Children[0]).IsEnabled, "inline reply hosts official browser and protects selection");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.body.insertAdjacentHTML('beforeend','<textarea id=reply-draft>Unsent synthetic draft</textarea>')");
+                var beforeReplySearch = readerNavigations;
+                await pane.SearchSaved("another message");
+                Check(readerNavigations == beforeReplySearch && readerList.SelectedIndex == 0, "search cannot navigate away from an active reply");
+                pane.Close(); host.Children.Remove(pane);
+                Check(a.View.Parent == browserParentBeforeReply && a.ReaderReplyOpen, "closing reader returns browser to its owner without dropping reply state");
+                pane = new ReaderPane(a, () => originalRequests++); host.Children.Add(pane); await pane.Start();
+                readerList = ((DockPanel)pane.Children[0]).Children.OfType<ListBox>().Single();
+                readerBody = (StackPanel)((ScrollViewer)((DockPanel)pane.Children[1]).Children[1]).Content;
+                Check(pane.IsReplyVisible && readerNavigations == beforeReplySearch && await a.View.CoreWebView2.ExecuteScriptAsync("document.querySelector('#reply-draft').value") == "\"Unsent synthetic draft\"", "reopening reader restores existing reply DOM without navigation");
+                await pane.ReturnToReading(confirmed: true);
+                Check(!pane.IsReplyVisible && !a.ReaderReplyOpen && a.View.Parent == browserParentBeforeReply && readerList.SelectedIndex == 0 && readerBody.Children.OfType<TextBlock>().Any(t => t.Text.Contains("Safe text")), "return from reply restores native message and browser ownership");
                 await pane.PerformAction(ReaderAction.Archive);
                 Check(originalRequests == 0 && readerList.SelectedIndex == 0 && readerBody.Children.OfType<TextBlock>().Any(t => t.Text.Contains("Safe text")), "unavailable action preserves reader and selected content without modal fallback");
                 pane.UpdateLayout();
@@ -279,6 +292,25 @@ internal static class Program
                     var activeList = ((DockPanel)((ReaderPane)readerHost.Children[0]).Children[0]).Children.OfType<ListBox>().Single();
                     Check(activeList.Items.Cast<ReaderLetter>().Single().Sender == store.Settings.Profiles[index].Name, "switched reader shows only selected account cache");
                 }
+                var firstView = browserHost.Children.OfType<Microsoft.Web.WebView2.Wpf.WebView2>().First();
+                firstView.CoreWebView2.WebResourceRequested += (_, e) =>
+                {
+                    if (new Uri(e.Request.Uri).AbsolutePath == "/__mailtrim_reader")
+                        e.Response = firstView.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes("<html><body><div class='letter-body__body'>Synthetic account reply</div><textarea id='account-draft'>Account one draft</textarea></body></html>")), 200, "OK", "Content-Type: text/html; charset=utf-8");
+                };
+                var firstPane = (ReaderPane)readerHost.Children[0];
+                var firstList = ((DockPanel)firstPane.Children[0]).Children.OfType<ListBox>().Single();
+                firstList.SelectedIndex = 0;
+                for (int i = 0; i < 100 && !firstList.IsEnabled; i++) await Task.Delay(50);
+                await firstPane.PerformAction(ReaderAction.Reply);
+                Check(firstPane.IsReplyVisible, "account reply opens inside production shell");
+                profiles.SelectedIndex = 1;
+                for (int i = 0; i < 100 && !shell.IsEnabled; i++) await Task.Delay(50);
+                Check(!((ReaderPane)readerHost.Children[0]).IsReplyVisible, "reply is not shown in another account");
+                profiles.SelectedIndex = 0;
+                for (int i = 0; i < 100 && !shell.IsEnabled; i++) await Task.Delay(50);
+                Check(((ReaderPane)readerHost.Children[0]).IsReplyVisible && toggleReader.Content.ToString() == "Оригинал" && await firstView.CoreWebView2.ExecuteScriptAsync("document.querySelector('#account-draft').value") == "\"Account one draft\"", "account switch restores its reply without losing unsent text");
+                await ((ReaderPane)readerHost.Children[0]).ReturnToReading(confirmed: true);
                 toggleReader.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));                // Capture the native WPF shell with the webview hidden, showing only synthetic test UI.
                 browserHost.Visibility = Visibility.Hidden;
                 shell.UpdateLayout();

@@ -10,6 +10,7 @@ public sealed class BrowserSession : IDisposable
 {
     public WebView2 View { get; } = new();
     public ReaderPosition? ReaderState { get; set; }
+    public bool ReaderReplyOpen { get; set; }
     public MessageCache Cache { get; private set; } = null!;
     private readonly LocalStore store;
     private readonly Window owner;
@@ -173,7 +174,7 @@ public sealed class BrowserSession : IDisposable
     }
     public async Task ClearData()
     {
-        ReaderState = null; Cache.Clear();
+        ReaderState = null; ReaderReplyOpen = false; Cache.Clear();
         foreach (var p in popups.ToArray()) p.Window.Close();
         View.CoreWebView2.Stop();
         // Navigate away before wiping so the loaded mail page cannot repopulate its session.
