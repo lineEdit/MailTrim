@@ -56,7 +56,7 @@ public sealed class BrowserSession : IDisposable
             if ((popup || clearing) && e.Uri == "about:blank") return;
             e.Cancel = true;
             // Do not leak an OAuth redirect URL into another browser automatically.
-            if (NavigationPolicy.IsExternal(e.Uri) && e.IsUserInitiated) OpenExternal(e.Uri);
+            if (NavigationPolicy.IsExternal(e.Uri) && e.IsUserInitiated) QueueExternal(e.Uri);
             else status("Переход за пределы почты остановлен. Откройте ссылку вручную в браузере.");
         };
         core.NavigationCompleted += (_, e) =>
@@ -65,13 +65,17 @@ public sealed class BrowserSession : IDisposable
             if (!e.IsSuccess) store.Log("navigation_failed");
         };
         core.ServerCertificateErrorDetected += (_, e) => e.Action = CoreWebView2ServerCertificateErrorAction.Cancel;
-        core.PermissionRequested += (_, e) =>
+        core.PermissionRequested += async (_, e) =>
         {
             e.SavesInProfile = false;
             e.State = CoreWebView2PermissionState.Deny;
-            if (e.IsUserInitiated && NavigationPolicy.IsInternal(e.Uri)
-                && MessageBox.Show(owner, "Разрешить официальной странице доступ: " + e.PermissionKind + "?", "Разрешение сайта", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
-                e.State = CoreWebView2PermissionState.Allow;
+            if (!e.IsUserInitiated || !NavigationPolicy.IsInternal(e.Uri)) return;
+            using var deferral = e.GetDeferral();
+            await owner.Dispatcher.InvokeAsync(() =>
+            {
+                if (!disposed && MessageBox.Show(owner, "Разрешить официальной странице доступ: " + e.PermissionKind + "?", "Разрешение сайта", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
+                    e.State = CoreWebView2PermissionState.Allow;
+            });
         };
         core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All, CoreWebView2WebResourceRequestSourceKinds.All);
         core.WebResourceRequested += (_, e) =>
@@ -86,7 +90,7 @@ public sealed class BrowserSession : IDisposable
             e.Handled = true;
             if (!NavigationPolicy.IsInternal(e.Uri) && e.Uri != "about:blank")
             {
-                if (e.IsUserInitiated && NavigationPolicy.IsExternal(e.Uri)) OpenExternal(e.Uri);
+                if (e.IsUserInitiated && NavigationPolicy.IsExternal(e.Uri)) QueueExternal(e.Uri);
                 return;
             }
             using var deferral = e.GetDeferral();
@@ -100,17 +104,27 @@ public sealed class BrowserSession : IDisposable
                 window.Show();
                 await child.EnsureCoreWebView2Async(environment);
                 await Configure(child, true);
+                child.CoreWebView2.SourceChanged += (_, _) =>
+                {
+                    if (Uri.TryCreate(child.CoreWebView2.Source, UriKind.Absolute, out var origin))
+                        window.Title = "MailTrim • " + origin.IdnHost;
+                };
                 child.CoreWebView2.WindowCloseRequested += (_, _) => window.Close();
                 e.NewWindow = child.CoreWebView2; // Preserve opener + official authentication flow in this profile.
             }
             catch { store.Log("popup_failed"); window.Close(); status("Не удалось открыть окно авторизации."); }
         };
-        core.DownloadStarting += (_, e) =>
+        core.DownloadStarting += async (_, e) =>
         {
             // Use WebView2's download UI; always ask for a path, never auto-open attachments.
-            var dialog = new Microsoft.Win32.SaveFileDialog { FileName = System.IO.Path.GetFileName(e.ResultFilePath), Title = "Сохранить вложение" };
-            if (dialog.ShowDialog(owner) == true) e.ResultFilePath = dialog.FileName;
-            else e.Cancel = true;
+            using var deferral = e.GetDeferral();
+            e.Cancel = true;
+            await owner.Dispatcher.InvokeAsync(() =>
+            {
+                if (disposed) return;
+                var dialog = new Microsoft.Win32.SaveFileDialog { FileName = System.IO.Path.GetFileName(e.ResultFilePath), Title = "Сохранить вложение" };
+                if (dialog.ShowDialog(owner) == true) { e.ResultFilePath = dialog.FileName; e.Cancel = false; }
+            });
         };
         core.ProcessFailed += (_, _) => { store.Log("webview_process_failed"); status("Процесс WebView2 остановился. Перезапустите MailTrim."); };
         await SetScript(view);
@@ -155,6 +169,7 @@ public sealed class BrowserSession : IDisposable
         }
         finally { clearing = false; View.CoreWebView2.NavigationCompleted -= Completed; }
     }
+    private void QueueExternal(string url) => owner.Dispatcher.BeginInvoke(() => { if (!disposed) OpenExternal(url); });
     private void OpenExternal(string url)
     {
         if (!NavigationPolicy.IsExternal(url)) return;
