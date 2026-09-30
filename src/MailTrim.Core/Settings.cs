@@ -6,8 +6,8 @@ public sealed class AccountProfile : System.ComponentModel.INotifyPropertyChange
     public string Name { get; set; } = "Личный ящик";
     public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
     [System.Text.Json.Serialization.JsonIgnore] public MailboxStatus Status { get; private set; } = new("Ещё не проверено", null, null);
-    [System.Text.Json.Serialization.JsonIgnore] public string TabLabel => Name + (Status.CheckedAt is null ? "" : Status.Unread is { } n ? $" · {n}" : " · ?");
-    [System.Text.Json.Serialization.JsonIgnore] public string UnreadBadge => Status.CheckedAt is null ? "" : Status.Unread is { } n ? n.ToString() : "?";
+    [System.Text.Json.Serialization.JsonIgnore] public string TabLabel => Name + (Status.CheckedAt is null ? "" : Status.Unread is { } n ? $" · {n}" : "");
+    [System.Text.Json.Serialization.JsonIgnore] public string UnreadBadge => Status.CheckedAt is null ? "" : Status.Unread is { } n ? n.ToString() : "";
     [System.Text.Json.Serialization.JsonIgnore] public string StatusText => Status.Description;
     public void SetStatus(MailboxStatus status)
     {

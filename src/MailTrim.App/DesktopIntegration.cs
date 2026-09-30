@@ -56,7 +56,7 @@ public sealed class DesktopIntegration : IDisposable
         var entries = profiles.ToArray();
         bool known = entries.Length > 0 && entries.All(p => p.Status.Unread.HasValue);
         long total = entries.Sum(p => (long)(p.Status.Unread ?? 0));
-        string label = !known ? "?" : total == 0 ? "M" : total > 99 ? "99+" : total.ToString();
+        string label = !known ? "M" : total == 0 ? "M" : total > 99 ? "99+" : total.ToString();
         using var bitmap = new System.Drawing.Bitmap(64,64);
         using var graphics = System.Drawing.Graphics.FromImage(bitmap);
         graphics.Clear(System.Drawing.Color.Transparent);
