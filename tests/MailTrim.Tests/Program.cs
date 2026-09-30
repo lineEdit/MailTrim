@@ -69,3 +69,45 @@ Check(tracker.Observe(Guid.NewGuid(), ["https://e.mail.ru/inbox/new"]) == 0, "no
 Check(tracker.Observe(profile, ["https://e.mail.ru/inbox/old"]) == 0, "removed head does not announce old mail");
 tracker.Clear(); Check(tracker.Observe(profile, ["https://e.mail.ru/inbox/new"]) == 0, "reenabling notifications resets baseline");Console.WriteLine($"{passed} checks passed.");
 
+
+var updateScratch = Path.Combine(Path.GetTempPath(), "MailTrim-package-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(updateScratch);
+try
+{
+    string MakePackage(string name, string? extra = null, bool complete = true)
+    {
+        var path = Path.Combine(updateScratch, name + ".zip");
+        using var zip = System.IO.Compression.ZipFile.Open(path, System.IO.Compression.ZipArchiveMode.Create);
+        foreach (var entry in complete ? new[] { "MailTrim.exe", "MailTrim.dll", "MailTrim.runtimeconfig.json", "rules/default.json" } : new[] { "MailTrim.exe" })
+        { using var writer = new StreamWriter(zip.CreateEntry(entry).Open()); writer.Write("fixture"); }
+        if (extra is not null) { using var writer = new StreamWriter(zip.CreateEntry(extra).Open()); writer.Write("fixture"); }
+        return path;
+    }
+    string Hash(string path) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)));
+    var valid = MakePackage("valid");
+    UpdatePackage.Extract(valid, Hash(valid), Path.Combine(updateScratch, "valid-out"), default);
+    Check(File.Exists(Path.Combine(updateScratch, "valid-out", "rules", "default.json")), "valid update extracted");
+    foreach (var unsafeName in new[] { "../escape", "/absolute", "a/../../escape", "C:/escape", "file:stream", "CON.txt", "folder./file", "MAILTRIM.EXE" })
+    {
+        var path = MakePackage(Guid.NewGuid().ToString("N"), unsafeName);
+        var rejected = false;
+        try { UpdatePackage.Extract(path, Hash(path), Path.Combine(updateScratch, Guid.NewGuid().ToString("N")), default); }
+        catch (InvalidDataException) { rejected = true; }
+        Check(rejected, "reject unsafe update entry " + unsafeName);
+    }
+    var badHash = false;
+    try { UpdatePackage.Extract(valid, new string('0', 64), Path.Combine(updateScratch, "bad-hash"), default); }
+    catch (InvalidDataException) { badHash = true; }
+    Check(badHash && !Directory.Exists(Path.Combine(updateScratch, "bad-hash")), "checksum failure leaves installation untouched");
+    var incomplete = MakePackage("incomplete", complete: false);
+    var missing = false;
+    try { UpdatePackage.Extract(incomplete, Hash(incomplete), Path.Combine(updateScratch, "missing"), default); }
+    catch (InvalidDataException) { missing = true; }
+    Check(missing, "reject incomplete update");
+    var cancelled = false;
+    try { UpdatePackage.Extract(valid, Hash(valid), Path.Combine(updateScratch, "cancelled"), new CancellationToken(true)); }
+    catch (OperationCanceledException) { cancelled = true; }
+    Check(cancelled && !Directory.Exists(Path.Combine(updateScratch, "cancelled")), "cancel update before extraction");
+}
+finally { Directory.Delete(updateScratch, true); }
+Console.WriteLine($"{passed} total checks passed.");

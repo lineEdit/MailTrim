@@ -37,7 +37,9 @@ public static class UpdateChecker
             if (latest.Version > current)
             {
                 var channel = latest.Prerelease ? "предварительная" : "стабильная";
-                if (MessageBox.Show(owner, $"Доступна {channel} версия {latest.Tag}. Установлена {current.ToString(3)}. Открыть страницу релиза?", "Обновление MailTrim", MessageBoxButton.YesNo) == MessageBoxResult.Yes)
+                if (repo.Equals("lineEdit/MailTrim", StringComparison.OrdinalIgnoreCase))
+                    UpdateInstaller.Show(owner, store, latest);
+                else if (MessageBox.Show(owner, $"Доступна {channel} версия {latest.Tag}. Установлена {current.ToString(3)}. Открыть страницу релиза?", "Обновление MailTrim", MessageBoxButton.YesNo) == MessageBoxResult.Yes)
                     Process.Start(new ProcessStartInfo($"https://github.com/{repo}/releases/tag/{Uri.EscapeDataString(latest.Tag)}") { UseShellExecute = true });
             }
             else if (!silent) MessageBox.Show(owner, "Установлена актуальная версия.", "MailTrim");

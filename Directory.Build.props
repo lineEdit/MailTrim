@@ -2,7 +2,7 @@
   <PropertyGroup>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>0.8.1</Version>
+    <Version>0.9.0</Version>
     <Authors>MailTrim contributors</Authors>
     <Copyright>Copyright © 2026 MailTrim contributors</Copyright>
     <Deterministic>true</Deterministic>

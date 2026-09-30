@@ -46,7 +46,7 @@ public sealed class SettingsWindow : Window
         main.Children.Add(Label("Репозиторий обновлений: owner/repository")); main.Children.Add(repository); main.Children.Add(updates); main.Children.Add(previewUpdates);
         var check = new Button { Content = "Проверить версию сейчас", HorizontalAlignment = HorizontalAlignment.Left };
         check.Click += async (_, _) => { check.IsEnabled = false; try { await UpdateChecker.Check(this, store, false, repository.Text.Trim(), previewUpdates.IsChecked == true); } finally { check.IsEnabled = true; } };
-        main.Children.Add(check); main.Children.Add(Note("Новая версия открывается на GitHub после подтверждения. Автоматической установки и выполнения загруженных файлов нет."));
+        main.Children.Add(check); main.Children.Add(Note("Обновления lineEdit/MailTrim можно скачать и установить здесь. Перед перезапуском потребуется подтверждение. Для других репозиториев открывается страница релиза."));
         main.Children.Add(Label("Локальные данные"));
         main.Children.Add(Note("Сессии хранятся в %LOCALAPPDATA%\\MailTrim\\Profiles. Журнал содержит только время и коды событий, без адресов, URL, заголовков и содержимого писем."));
         tabs.Items.Add(new TabItem { Header = "Общие", Content = new ScrollViewer { Content = main, VerticalScrollBarVisibility = ScrollBarVisibility.Auto } });
