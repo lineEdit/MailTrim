@@ -2,12 +2,13 @@
   <PropertyGroup>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>0.2.1</Version>
+    <Version>0.2.2</Version>
     <Authors>MailTrim contributors</Authors>
     <Copyright>Copyright © 2026 MailTrim contributors</Copyright>
     <Deterministic>true</Deterministic>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 </Project>
+
 
 
