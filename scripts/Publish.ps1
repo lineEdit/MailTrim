@@ -7,7 +7,7 @@ try {
     [xml]$props = Get-Content Directory.Build.props
     $version = $props.Project.PropertyGroup.Version
     $out = Join-Path $repoRoot "artifacts/MailTrim-$version-$Runtime"
-    dotnet publish src/MailTrim.App/MailTrim.App.csproj -c Release -r $Runtime --self-contained true -p:PublishSingleFile=false -o $out
+    dotnet publish src/MailTrim.App/MailTrim.App.csproj -c Release -r $Runtime --self-contained true -p:PublishSingleFile=false -p:RestoreLockedMode=true -o $out
     if ($LASTEXITCODE -ne 0) { throw 'Publish failed' }
     Copy-Item README.md,LICENSE,SECURITY.md,THIRD-PARTY-NOTICES.md -Destination $out
     Copy-Item src/MailTrim.App/packages.lock.json -Destination $out

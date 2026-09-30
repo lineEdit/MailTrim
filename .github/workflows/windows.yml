@@ -1,43 +1,69 @@
-name: Windows build
+name: Windows pipeline
 on:
   push:
-    branches: [main]
+    branches: ['**']
     tags: ['v*']
   pull_request:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_NOLOGO: '1'
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-      - run: dotnet restore MailTrim.sln --locked-mode
-      - run: dotnet build MailTrim.sln -c Release --no-restore
-      - run: dotnet run --project tests/MailTrim.Tests -c Release --no-build
+          cache: true
+          cache-dependency-path: src/MailTrim.App/packages.lock.json
+      - name: Restore locked dependencies
+        run: dotnet restore MailTrim.sln --locked-mode
+      - name: Build Release
+        run: dotnet build MailTrim.sln -c Release --no-restore
+      - name: Core checks
+        run: dotnet run --project tests/MailTrim.Tests -c Release --no-build
       - name: WebView2 integration checks
         run: dotnet run --project tests/MailTrim.Smoke -c Release --no-build -- "${{ runner.temp }}/mailtrim-smoke"
-      - run: ./scripts/Publish.ps1
-      - uses: actions/upload-artifact@v4
+      - name: Package standalone Windows application
+        run: ./scripts/Publish.ps1
+      - name: Upload ZIP and SHA-256
+        id: package
+        uses: actions/upload-artifact@v4
         with:
-          name: MailTrim-win-x64
+          name: MailTrim-win-x64-build-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 30
           path: |
             artifacts/*.zip
             artifacts/*.sha256
+      - name: Download link
+        shell: pwsh
+        env:
+          ARTIFACT_URL: ${{ steps.package.outputs.artifact-url }}
+        run: |
+          "## MailTrim — Windows x64" >> $env:GITHUB_STEP_SUMMARY
+          "[Download ZIP and SHA-256]($env:ARTIFACT_URL)" >> $env:GITHUB_STEP_SUMMARY
+          "Build and both test suites passed. Extract the application ZIP completely and run MailTrim.exe." >> $env:GITHUB_STEP_SUMMARY
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: MailTrim-win-x64
+          name: MailTrim-win-x64-build-${{ github.run_number }}
           path: artifacts
       - name: Create draft prerelease
         env:
