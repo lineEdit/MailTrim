@@ -85,8 +85,16 @@ public sealed class ReaderPane : Grid
         notice.FontSize = 11; notice.MaxHeight = 32;
         tools.Children.Add(notice); left.Children.Add(list);        list.SelectionChanged += async (_, _) => { if (!restoring && list.SelectedItem is ReaderLetter letter) await Read(letter); };
         var right = new DockPanel(); SetColumn(right, 2); Children.Add(right);
-        var open = new Button { Content = "Ответить / вложения ↗", Padding = new Thickness(8,4,8,4), HorizontalAlignment = HorizontalAlignment.Left };
-        DockPanel.SetDock(open, Dock.Top); right.Children.Add(open); open.Click += (_, _) => OpenOriginal();
+        var messageActions = new WrapPanel();
+        DockPanel.SetDock(messageActions, Dock.Top); right.Children.Add(messageActions);
+        foreach (var (label, action) in new[] { ("Ответить", ReaderAction.Reply), ("Прочитано", ReaderAction.MarkRead), ("В архив", ReaderAction.Archive), ("Удалить…", ReaderAction.Delete) })
+        {
+            var button = new Button { Content = label, Padding = new Thickness(8,4,8,4), ToolTip = "Выполнить через официальный интерфейс Mail.ru" };
+            messageActions.Children.Add(button);
+            button.Click += async (_, _) => await PerformAction(action);
+        }
+        var open = new Button { Content = "Оригинал / вложения ↗", Padding = new Thickness(8,4,8,4) };
+        messageActions.Children.Add(open); open.Click += (_, _) => { if (!loading) OpenOriginal(); };
         right.Children.Add(new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
         AddText("Выберите письмо слева. Ответы, ссылки и вложения доступны в оригинале.");
         var splitter = new GridSplitter { Width = 5, HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch,
@@ -97,6 +105,40 @@ public sealed class ReaderPane : Grid
         splitter.DragCompleted += (_, _) => session.SaveReaderListWidth(ColumnDefinitions[0].ActualWidth);
         splitter.KeyUp += (_, _) => session.SaveReaderListWidth(ColumnDefinitions[0].ActualWidth);
         splitter.MouseDoubleClick += (_, _) => { ColumnDefinitions[0].Width = new GridLength(310); session.SaveReaderListWidth(310); };
+    }
+    public async Task PerformAction(ReaderAction action)
+    {
+        if (loading || lifetime.IsCancellationRequested) return;
+        if (selectedLetter is not { } letter) { notice.Text = "Сначала выберите письмо."; return; }
+        if (action == ReaderAction.Delete && MessageBox.Show(Window.GetWindow(this),
+            $"Удалить выбранное письмо через Mail.ru?\n\n{letter.Subject}\n\nИз корзины и нестандартных папок удаление доступно только вручную в оригинале.",
+            "Удаление письма", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+        loading = true; list.IsEnabled = false; notice.Text = "Открываю выбранное письмо в Mail.ru…";
+        try
+        {
+            // Cached reading need not have navigated the browser to the selected letter.
+            await new ReaderSource(session).Read(letter, lifetime.Token);
+            lifetime.Token.ThrowIfCancellationRequested();
+            var result = await Extract<string>(ReaderActionScript.Create(action, letter.Url));
+            lifetime.Token.ThrowIfCancellationRequested();
+            // Mail.ru owns confirmation dialogs, compose state and the final server outcome.
+            // Do not optimistically remove a cached message or report server success.
+            original();
+            if (result != "clicked")
+            {
+                var instruction = action switch
+                {
+                    ReaderAction.Reply => "Нажмите «Ответить» в открытом письме.",
+                    ReaderAction.MarkRead => "Открытие письма обычно отмечает его прочитанным. Проверьте состояние в Mail.ru.",
+                    ReaderAction.Archive => "Нажмите «В архив» в открытом письме.",
+                    _ => "Удаление автоматически не выполнено. Используйте кнопку Mail.ru, проверив выбранное письмо."
+                };
+                MessageBox.Show(Window.GetWindow(session.View), instruction, "Действие в Mail.ru");
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch { notice.Text = "Действие не подтверждено. Откройте оригинал и проверьте письмо."; }
+        finally { loading = false; list.IsEnabled = true; }
     }
     public void FocusSearch() { if (searchBox.IsEnabled) { searchBox.Focus(); searchBox.SelectAll(); } }
     public Task ResetSearch() => SearchSaved("");

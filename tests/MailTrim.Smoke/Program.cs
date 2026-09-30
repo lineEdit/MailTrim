@@ -148,6 +148,29 @@ internal static class Program
                 store.Log(sentinel); store.Log("test_event");
                 Check(!File.ReadAllText(Path.Combine(root, "events.log")).Contains(sentinel), "log rejects sensitive strings");
                 await Navigate(a, "https://e.mail.ru/__mailtrim_reader");
+                await a.View.CoreWebView2.ExecuteScriptAsync("""
+                history.replaceState(null,'','/inbox/action-test');
+                document.querySelectorAll('a.js-letter-list-item').forEach(e=>e.remove());
+                window.actionCount=0;
+                document.body.insertAdjacentHTML('afterbegin','<div role="toolbar" id="action-toolbar"><button onclick="window.actionCount++">Ответить</button><button onclick="window.actionCount++">Отметить прочитанным</button><button onclick="window.actionCount++">В архив</button><button onclick="window.actionCount++">Удалить</button></div>');
+                document.querySelector('.letter-body__body').insertAdjacentHTML('beforeend','<div role="toolbar"><button onclick="window.evilClicked=true">Удалить</button></div>');
+                """);
+                const string actionUrl = "https://e.mail.ru/inbox/action-test";
+                foreach (var action in Enum.GetValues<ReaderAction>())
+                    Check(await a.View.CoreWebView2.ExecuteScriptAsync(ReaderActionScript.Create(action, actionUrl)) == "\"clicked\"", "native action routes to official toolbar: " + action);
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("window.actionCount===4 && !window.evilClicked") == "true", "message HTML cannot provide action controls");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync(ReaderActionScript.Create(ReaderAction.Delete, "https://e.mail.ru/inbox/another")) == "\"wrong-message\"", "action rejects a different selected message");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync(ReaderActionScript.Create(ReaderAction.Delete, actionUrl + "?id=another")) == "\"wrong-message\"", "action rejects a different message query");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.body.insertAdjacentHTML('beforeend','<a class=js-letter-list-item id=bulk-test>Other message</a>')");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync(ReaderActionScript.Create(ReaderAction.Delete, actionUrl)) == "\"ambiguous\"", "action refuses a bulk message list");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.querySelector('#bulk-test').remove()");
+                await a.View.CoreWebView2.ExecuteScriptAsync("history.replaceState(null,'','/trash/action-test')");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync(ReaderActionScript.Create(ReaderAction.Delete, "https://e.mail.ru/trash/action-test")) == "\"manual-delete\"", "permanent trash deletion is never automated");
+                await a.View.CoreWebView2.ExecuteScriptAsync("history.replaceState(null,'','/inbox/action-test');document.querySelector('#action-toolbar').insertAdjacentHTML('beforeend','<button>В архив</button>')");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync(ReaderActionScript.Create(ReaderAction.Archive, actionUrl)) == "\"unavailable\"", "ambiguous action buttons are not clicked");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.querySelector('#action-toolbar').remove()");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync(ReaderActionScript.Create(ReaderAction.Delete, actionUrl)) == "\"unavailable\"", "missing toolbar never falls back to message HTML");
+                await Navigate(a, "https://e.mail.ru/__mailtrim_reader");
                 var readerRows = System.Text.Json.JsonSerializer.Deserialize<List<ReaderLetter>>(await a.View.CoreWebView2.ExecuteScriptAsync(ReaderScript.List), FilterRules.Json)!;
                 Check(readerRows.Count == 1 && readerRows[0].Subject == "Subject", "reader extracts real message anchors only");
                 var readerBlocks = System.Text.Json.JsonSerializer.Deserialize<List<ReaderBlock>>(await a.View.CoreWebView2.ExecuteScriptAsync(ReaderScript.Body), FilterRules.Json)!;
