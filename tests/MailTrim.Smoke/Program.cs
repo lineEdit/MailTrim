@@ -272,7 +272,8 @@ internal static class Program
                 await a.ClearData();
                 Check(reopenedCache.List().Count == 0, "clearing profile also clears encrypted reader cache");                host.Children.Remove(pane);
                 store.Settings.Profiles.Add(new AccountProfile { Name = "Рабочий ящик" });
-                var shell = new MainWindow(store) { Width = 1080, Left = -20000, Top = -20000, WindowStartupLocation = WindowStartupLocation.Manual, ShowActivated = false, ShowInTaskbar = false };
+                var replyExitPrompts = 0; var allowReplyExit = false;
+                var shell = new MainWindow(store, confirmReplyExit: _ => { replyExitPrompts++; return allowReplyExit; }) { Width = 1080, Left = -20000, Top = -20000, WindowStartupLocation = WindowStartupLocation.Manual, ShowActivated = false, ShowInTaskbar = false };
                 shell.Show();
                 var browserHost = (Grid)shell.FindName("BrowserHost");
                 for (var i = 0; i < 100 && (!shell.IsEnabled || browserHost.Children.Count == 0); i++) await Task.Delay(100);
@@ -310,7 +311,29 @@ internal static class Program
                 profiles.SelectedIndex = 0;
                 for (int i = 0; i < 100 && !shell.IsEnabled; i++) await Task.Delay(50);
                 Check(((ReaderPane)readerHost.Children[0]).IsReplyVisible && toggleReader.Content.ToString() == "Оригинал" && await firstView.CoreWebView2.ExecuteScriptAsync("document.querySelector('#account-draft').value") == "\"Account one draft\"", "account switch restores its reply without losing unsent text");
-                await ((ReaderPane)readerHost.Children[0]).ReturnToReading(confirmed: true);
+                var guardedNavigations = 0;
+                firstView.CoreWebView2.NavigationStarting += (_, _) => guardedNavigations++;
+                foreach (var control in new[] { "HomeButton", "ReloadButton" })
+                    ((Button)shell.FindName(control)).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Check(replyExitPrompts == 2 && guardedNavigations == 0 && ((ReaderPane)readerHost.Children[0]).IsReplyVisible, "cancelled home and reload preserve reply without browser navigation");
+                var f5 = new System.Windows.Input.KeyEventArgs(System.Windows.Input.Keyboard.PrimaryDevice, PresentationSource.FromVisual(shell), 0, System.Windows.Input.Key.F5) { RoutedEvent = System.Windows.Input.Keyboard.PreviewKeyDownEvent };
+                shell.RaiseEvent(f5);
+                Check(f5.Handled && replyExitPrompts == 3 && guardedNavigations == 0, "application F5 follows the same reply protection");
+                var shellClosed = false; shell.Closed += (_, _) => shellClosed = true;
+                profiles.SelectedIndex = 1;
+                for (int i = 0; i < 100 && !shell.IsEnabled; i++) await Task.Delay(50);
+                shell.Close();
+                Check(!shellClosed && replyExitPrompts == 4, "exit protects reply in an inactive account");
+                profiles.SelectedIndex = 0;
+                for (int i = 0; i < 100 && !shell.IsEnabled; i++) await Task.Delay(50);
+                allowReplyExit = true;
+                ((Button)shell.FindName("ReloadButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                for (int i = 0; i < 100 && guardedNavigations == 0; i++) await Task.Delay(25);
+                Check(replyExitPrompts == 5 && guardedNavigations > 0 && readerHost.Visibility == Visibility.Collapsed, "confirmed reload leaves reply and navigates");
+                toggleReader.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                for (int i = 0; i < 100 && readerHost.Children.Count == 0; i++) await Task.Delay(25);
+                Check(!((ReaderPane)readerHost.Children[0]).IsReplyVisible, "confirmed navigation clears obsolete reply state");
+
                 toggleReader.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));                // Capture the native WPF shell with the webview hidden, showing only synthetic test UI.
                 browserHost.Visibility = Visibility.Hidden;
                 shell.UpdateLayout();
@@ -328,6 +351,11 @@ internal static class Program
                     store.Settings.Profiles[0].SetStatus(new MailboxStatus("Нужен вход", null, null));
                     integration.UpdateCounts(store.Settings.Profiles);
                     Check(true, "tray renders numeric and unknown counter icons");
+                    System.ComponentModel.CancelEventHandler cancelExit = (_, e) => e.Cancel = true;
+                    trayWindow.Closing += cancelExit;
+                    integration.RequestExit();
+                    Check(!trayClosed && !integration.Exiting, "cancelled tray exit resets exit intent");
+                    trayWindow.Closing -= cancelExit;
                     store.Settings.CloseToTray = true; trayWindow.Show(); trayWindow.Close();
                     Check(!trayClosed && !trayWindow.IsVisible, "window close hides to tray without destroying session");
                     integration.Restore(); Check(trayWindow.IsVisible, "tray action restores hidden window");

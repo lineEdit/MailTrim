@@ -20,6 +20,13 @@ public sealed class DesktopIntegration : IDisposable
     private readonly LocalStore store;
     private readonly Forms.NotifyIcon icon;
     public bool Exiting { get; private set; }
+    public bool SystemEnding { get; private set; }
+    public void RequestExit()
+    {
+        Exiting = true;
+        try { window.Close(); }
+        finally { Exiting = false; }
+    }
     public event Action? CheckRequested;
     private bool explained;
     public DesktopIntegration(Window window, LocalStore store, bool showTips = true)
@@ -33,7 +40,7 @@ public sealed class DesktopIntegration : IDisposable
         quiet.CheckedChanged += (_, _) => { store.Settings.NotifyNewMail = quiet.Checked; store.Save(); };
         menu.Opening += (_, _) => quiet.Checked = store.Settings.NotifyNewMail;
         menu.Items.Add(quiet); menu.Items.Add(new Forms.ToolStripSeparator());
-        menu.Items.Add("Выйти", null, (_, _) => { Exiting = true; window.Close(); });
+        menu.Items.Add("Выйти", null, (_, _) => RequestExit());
         icon.ContextMenuStrip = menu;
         icon.DoubleClick += (_, _) => Restore(); icon.BalloonTipClicked += (_, _) => Restore();
         window.Closing += (_, e) =>
@@ -42,7 +49,7 @@ public sealed class DesktopIntegration : IDisposable
             e.Cancel = true; window.Hide();
             if (!explained && showTips) { explained = true; icon.ShowBalloonTip(3000, "MailTrim работает в трее", "Двойной щелчок — открыть. «Выйти» в меню значка — завершить работу.", Forms.ToolTipIcon.Info); }
         };
-        Application.Current.SessionEnding += (_, _) => Exiting = true;
+        Application.Current.SessionEnding += (_, _) => { SystemEnding = true; Exiting = true; };
     }
     public void Restore()
     {

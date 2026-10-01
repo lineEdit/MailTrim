@@ -83,6 +83,7 @@ public static class UpdateInstaller
                 using var helper = UpdateHandoff.Start(Environment.ProcessPath!, "--apply-update", id);
                 working = false;
                 window.Close();
+                (System.Windows.Application.Current.MainWindow as MainWindow)?.AllowConfirmedShutdown();
                 System.Windows.Application.Current.Shutdown();
             }
             catch (OperationCanceledException) { status.Text = "Загрузка отменена. Приложение не изменено."; }

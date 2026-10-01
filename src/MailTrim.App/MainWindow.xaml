@@ -39,9 +39,9 @@
     </Button>
     <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center">
      <Button x:Name="ReaderButton" Content="Только важное" Height="32" Padding="8,0" Click="Reader_Click"/>
-     <Button Content="←" Width="34" Height="32" Padding="0" ToolTip="Назад (Alt+Left)" AutomationProperties.Name="Назад" Click="Back_Click"/>
-     <Button Content="↻" Width="34" Height="32" Padding="0" FontSize="18" ToolTip="Обновить (F5)" AutomationProperties.Name="Обновить" Click="Reload_Click"/>
-     <Button Content="Входящие" Height="32" Padding="10,0" Click="Home_Click"/>
+     <Button x:Name="BackButton" Content="←" Width="34" Height="32" Padding="0" ToolTip="Назад (Alt+Left)" AutomationProperties.Name="Назад" Click="Back_Click"/>
+     <Button x:Name="ReloadButton" Content="↻" Width="34" Height="32" Padding="0" FontSize="18" ToolTip="Обновить (F5)" AutomationProperties.Name="Обновить" Click="Reload_Click"/>
+     <Button x:Name="HomeButton" Content="Входящие" Height="32" Padding="10,0" Click="Home_Click"/>
      <Button x:Name="PauseButton" Content="Фильтры: вкл" Height="32" Padding="10,0" ToolTip="Приостановить фильтры" Click="Pause_Click"/>
      <Button Content="⚙" Width="34" Height="32" Padding="0" FontSize="18" ToolTip="Настройки" AutomationProperties.Name="Настройки" Click="Settings_Click"/>
     </StackPanel>
