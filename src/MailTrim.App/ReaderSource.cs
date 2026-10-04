@@ -18,6 +18,7 @@ public sealed class ReaderSource(BrowserSession session)
         void Loaded(object? s, CoreWebView2DOMContentLoadedEventArgs e) { if (id == e.NavigationId) ready.TrySetResult(); }
         core.NavigationStarting += Started; core.DOMContentLoaded += Loaded;
         try { core.Navigate(url); await ready.Task.WaitAsync(TimeSpan.FromSeconds(25), token); }
+        catch (OperationCanceledException) { core.Stop(); throw; }
         finally { core.NavigationStarting -= Started; core.DOMContentLoaded -= Loaded; }
     }
     public async Task<List<ReaderBlock>> Read(ReaderLetter letter, CancellationToken token)

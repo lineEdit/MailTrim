@@ -50,12 +50,22 @@ internal static class Program
                 Check(chronologyCache.Search("Chrono", default).Select(l => l.Subject).SequenceEqual(new[] { "New", "Old", "Unknown" }), "cache search preserves newest-first ordering");
                 chronologyCache.RefreshMetadata(unknownDate with { ReceivedAt = captured.AddDays(-1), CapturedAt = captured });
                 Check(chronologyCache.List()[1].Subject == "Unknown" && chronologyCache.Get(unknownDate.Url)![0].Text == "Chrono text", "fresh date metadata corrects old cache ordering without changing body");
+                var headerOnly = new ReaderLetter("https://e.mail.ru/inbox/header-only", "Fresh sender", "Header only", "Preview", "", ReceivedAt: captured.AddMinutes(1));
+                chronologyCache.SaveHeaders([headerOnly, newDate with { Subject = "Updated subject" }, headerOnly]);
+                Check(chronologyCache.List().Count == 4 && chronologyCache.List()[0].Subject == "Header only" && chronologyCache.Get(headerOnly.Url) is null, "encrypted headers persist new mail without opening it or inventing cached bodies");
+                Check(chronologyCache.Search("Fresh sender", default).Single().Url == headerOnly.Url && chronologyCache.Search("Chrono text", default).Count == 3, "header search and full-text cache search merge without duplicates");
+                chronologyCache.SaveHeaders([headerOnly with { Date = "unknown", ReceivedAt = null, CapturedAt = null }]);
+                Check(chronologyCache.List()[0].ReceivedAt == headerOnly.ReceivedAt, "metadata without a date cannot erase a known mail date");
+                chronologyCache.SaveHeaders([headerOnly with { Date = "Today", ReceivedAt = null, CapturedAt = captured }]);
+                Check(chronologyCache.List()[0].ReceivedAt == headerOnly.ReceivedAt, "relative display date cannot replace an exact server date");
+                chronologyCache.Clear(); Check(chronologyCache.List().Count == 0, "clear cache removes both bodies and encrypted headers");
                 var paused = false;
                 var a = new BrowserSession(store, window, _ => { }, () => paused, _ => { });
                 var b = new BrowserSession(store, window, _ => { }, () => paused, _ => { });
                 sessions.Add(a); sessions.Add(b); host.Children.Add(a.View); host.Children.Add(b.View);
                 var id = Guid.NewGuid();
-                await a.Initialize(id); await b.Initialize(Guid.NewGuid());
+                var secondProfileId = Guid.NewGuid();
+                await a.Initialize(id); await b.Initialize(secondProfileId);
                 a.View.CoreWebView2.Stop(); b.View.CoreWebView2.Stop();
                 ConfigureFixture(a); ConfigureFixture(b);
                 await Navigate(a, "https://e.mail.ru/__mailtrim_fixture");
@@ -330,6 +340,67 @@ internal static class Program
                 raceList.SelectedIndex = 0; await Task.Delay(100);
                 racePane.Close(); host.Children.Remove(racePane); await Task.Delay(250);
                 Check(raceBody.Children.Count == 0, "closed renderer ignores cancelled in-flight message data");
+                Console.WriteLine("Checking automatic cache-first refresh with synthetic mail…");
+                b.Cache.Clear(); b.ReaderState = null;
+                var retained = new ReaderLetter("https://e.mail.ru/__mailtrim_reader", "Retained sender", "Retained", "Preview", "", ReceivedAt: captured.AddDays(-1));
+                var archived = new ReaderLetter("https://e.mail.ru/archive/retained", "Archive", "Archived", "", "", ReceivedAt: captured.AddDays(-2));
+                b.Cache.Save(retained, [new ReaderBlock("Cached reading text", "")]);
+                b.Cache.Save(archived, [new ReaderBlock("Archived text", "")]);
+                var emptyInbox = false;
+                TaskCompletionSource refreshStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                async void RefreshFixture(object? sender, CoreWebView2WebResourceRequestedEventArgs e)
+                {
+                    if (new Uri(e.Request.Uri).AbsolutePath != "/inbox/") return;
+                    using var deferral = e.GetDeferral(); refreshStarted.TrySetResult();
+                    await Task.Delay(700);
+                    var html = emptyInbox ? "<html><body>Sign in required</body></html>" : """
+                        <html><body>
+                        <a class="js-letter-list-item" href="/__refresh_new"><span>Fresh sender</span><span>New incoming</span><span>Fresh preview</span><time datetime="2027-01-01T12:00:00Z">01.01.27</time></a>
+                        <a class="js-letter-list-item" href="/__mailtrim_reader"><span>Retained sender</span><span>Retained updated</span><span>Preview</span><time datetime="2026-10-01T12:00:00Z">01.10.26</time></a>
+                        </body></html>
+                        """;
+                    e.Response = b.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(html)), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
+                }
+                b.View.CoreWebView2.WebResourceRequested += RefreshFixture;
+                var freshPane = new ReaderPane(b, () => { }); host.Children.Add(freshPane);
+                await freshPane.Start();
+                var freshList = ((DockPanel)freshPane.Children[0]).Children.OfType<ListBox>().Single();
+                Check(freshList.Items.Count == 2 && !freshPane.BackgroundRefresh.IsCompleted && freshList.IsEnabled, "entry returns usable cached list before background network refresh");
+                freshList.SelectedItem = freshList.Items.Cast<ReaderLetter>().Single(x => x.Url == retained.Url);
+                await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                freshList.SelectedItem = freshList.Items.Cast<ReaderLetter>().Single(x => x.Url == archived.Url);
+                freshList.SelectedItem = freshList.Items.Cast<ReaderLetter>().Single(x => x.Url == retained.Url);
+                var freshScroll = (ScrollViewer)((DockPanel)freshPane.Children[1]).Children[1];
+                var freshBody = (StackPanel)freshScroll.Content;
+                var retainedText = freshBody.Children.OfType<TextBlock>().Single(x => x.Text == "Cached reading text");
+                freshBody.Children.Add(new TextBlock { Text = string.Join("\n", Enumerable.Repeat("Reading position", 100)) });
+                freshPane.UpdateLayout(); freshScroll.ScrollToVerticalOffset(120); freshPane.UpdateLayout();
+                await freshPane.BackgroundRefresh.WaitAsync(TimeSpan.FromSeconds(12)); freshPane.UpdateLayout();
+                Check(freshList.Items.Count == 3 && ((ReaderLetter)freshList.Items[0]).Subject == "New incoming" && freshList.Items.Cast<ReaderLetter>().Any(x => x.Url == archived.Url), "automatic refresh merges new incoming mail and keeps cached folders in date order");
+                Check(((ReaderLetter)freshList.SelectedItem).Url == retained.Url && freshBody.Children.Contains(retainedText) && freshScroll.VerticalOffset >= 100, "automatic refresh keeps selected message, rendered body and scroll");
+                Check(((ReaderLetter)freshList.SelectedItem).Subject == "Retained updated" && b.Cache.List().Count == 3 && b.Cache.Get("https://e.mail.ru/__refresh_new") is null, "fresh metadata updates existing row and persists new headers without opening messages");
+                await freshPane.RefreshList();
+                Check(freshList.Items.Count == 3 && freshBody.Children.Contains(retainedText), "manual refresh also preserves cached folders and displayed content");
+                var headerPath = Path.Combine(root, "ReaderCache", secondProfileId.ToString("N"), "headers.index");
+                Check(!Encoding.UTF8.GetString(File.ReadAllBytes(headerPath)).Contains("Fresh sender"), "refreshed mail headers are encrypted on disk");
+                freshPane.Close(); host.Children.Remove(freshPane);
+                emptyInbox = true;
+                var offlinePane = new ReaderPane(b, () => { }); host.Children.Add(offlinePane); await offlinePane.Start();
+                await offlinePane.BackgroundRefresh.WaitAsync(TimeSpan.FromSeconds(15));
+                Check(((DockPanel)offlinePane.Children[0]).Children.OfType<ListBox>().Single().Items.Count == 3 && b.Cache.List().Count == 3, "empty or unauthenticated web response never erases cached mail");
+                offlinePane.Close(); host.Children.Remove(offlinePane); emptyInbox = false;
+                refreshStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                var replyRefreshPane = new ReaderPane(b, () => { }); host.Children.Add(replyRefreshPane); await replyRefreshPane.Start();
+                await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                await replyRefreshPane.PerformAction(ReaderAction.Reply);
+                await replyRefreshPane.BackgroundRefresh.WaitAsync(TimeSpan.FromSeconds(5));
+                Check(replyRefreshPane.IsReplyVisible && b.ReaderReplyOpen, "reply cancels background refresh and prevents retry over the official editor");
+                await replyRefreshPane.ReturnToReading(true); replyRefreshPane.Close(); host.Children.Remove(replyRefreshPane);
+                var closedRefreshPane = new ReaderPane(b, () => { }); host.Children.Add(closedRefreshPane); await closedRefreshPane.Start();
+                closedRefreshPane.Close(); host.Children.Remove(closedRefreshPane);
+                await closedRefreshPane.BackgroundRefresh.WaitAsync(TimeSpan.FromSeconds(5));
+                Check(((DockPanel)closedRefreshPane.Children[0]).Children.OfType<ListBox>().Single().Items.Count == 0, "closing reader cancels automatic refresh without late UI changes");
+                b.View.CoreWebView2.WebResourceRequested -= RefreshFixture;
                 a.Cache.Clear();
                 Console.WriteLine("Checking whole-mailbox scan with synthetic folders…");
                 var batchResult = await a.ReaderData.CacheMailbox(_ => { }, _ => { }, CancellationToken.None);

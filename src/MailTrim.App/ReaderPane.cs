@@ -23,6 +23,9 @@ public sealed class ReaderPane : Grid
     private bool readingMessage;
     private long readGeneration;
     private CancellationTokenSource? messageRead;
+    private CancellationTokenSource? listRefresh;
+    private bool entryRefreshNeeded = true;
+    public Task BackgroundRefresh { get; private set; } = Task.CompletedTask;
     private readonly TextBox searchBox = new() { MaxLength = 256, ToolTip = "Поиск в кэше: отправитель, тема и текст. Enter — найти.", MinWidth = 160 };
     private int scrollOffset;
     private readonly Dictionary<string, List<ReaderBlock>> cache = [];
@@ -71,6 +74,8 @@ public sealed class ReaderPane : Grid
     }
     private async Task OpenReply(ReaderLetter letter)
     {
+        entryRefreshNeeded = false;
+        listRefresh?.Cancel();
         loading = true; list.IsEnabled = false;
         notice.Text = "Открываю ответ рядом со списком писем…";
         try
@@ -85,6 +90,7 @@ public sealed class ReaderPane : Grid
     }
     public void OpenOriginal()
     {
+        listRefresh?.Cancel();
         batch?.Cancel();
         if (!session.ReaderReplyOpen && selectedLetter is { } letter && session.View.CoreWebView2.Source != letter.Url)
             session.View.CoreWebView2.Navigate(letter.Url);
@@ -137,6 +143,7 @@ public sealed class ReaderPane : Grid
         clear.Click += (_, _) => {
             if (loading || IsReplyVisible) return;
             if (MessageBox.Show(Window.GetWindow(this), "Удалить локальные копии? Письма на сервере останутся.", "Очистка кэша", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
+            entryRefreshNeeded = false; listRefresh?.Cancel();
             try { session.Cache.Clear(); cache.Clear(); notice.Text = "Кэш удалён."; } catch { notice.Text = "Не удалось очистить кэш."; }
         };
         notice.FontSize = 11; notice.MaxHeight = 72;
@@ -176,6 +183,8 @@ public sealed class ReaderPane : Grid
         if (action == ReaderAction.Delete && MessageBox.Show(Window.GetWindow(this),
             $"Удалить выбранное письмо через Mail.ru?\n\n{letter.Subject}\n\nИз корзины и нестандартных папок удаление доступно только вручную в оригинале.",
             "Удаление письма", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+        entryRefreshNeeded = false;
+        listRefresh?.Cancel();
         loading = true; list.IsEnabled = false; notice.Text = "Открываю выбранное письмо в Mail.ru…";
         try
         {
@@ -205,6 +214,7 @@ public sealed class ReaderPane : Grid
     {
         if (loading || IsReplyVisible || lifetime.IsCancellationRequested) return;
         query = query.Trim(); searchBox.Text = query;
+        listRefresh?.Cancel();
         if (query.Length == 0)
         {
             restoring = true; list.Items.Clear(); foreach (var letter in letters) list.Items.Add(letter); restoring = false;
@@ -242,6 +252,7 @@ public sealed class ReaderPane : Grid
             FindScroll(list)?.ScrollToVerticalOffset(position.ListOffset);
             ((ScrollViewer)((DockPanel)Children[1]).Children[1]).ScrollToVerticalOffset(position.BodyOffset);
             notice.Text = $"Писем: {letters.Count}. Позиция восстановлена.";
+            BackgroundRefresh = RefreshOnEntry();
             return;
         }
         List<ReaderLetter> saved;
@@ -249,8 +260,62 @@ public sealed class ReaderPane : Grid
         catch { notice.Text = "Не удалось открыть кэш. Проверьте доступ к локальной папке."; return; }
         if (lifetime.IsCancellationRequested) return;
         foreach (var letter in saved) AddLetter(letter);
-        if (saved.Count > 0) { notice.Text = $"В кэше: {saved.Count}. ↻ — проверить новые письма."; return; }
+        if (saved.Count > 0) { notice.Text = $"В кэше: {saved.Count}. Проверяю новые входящие…"; BackgroundRefresh = RefreshOnEntry(); return; }
         await LoadList(false);
+    }
+    private async Task RefreshOnEntry()
+    {
+        try
+        {
+            // Return the cache immediately. Foreground reading has priority over the shared source.
+            await Task.Delay(150, lifetime.Token);
+            while (!lifetime.IsCancellationRequested && !session.ReaderReplyOpen && entryRefreshNeeded)
+            {
+                if (loading || searchBox.Text.Length > 0) { await Task.Delay(250, lifetime.Token); continue; }
+                using var request = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+                listRefresh = request;
+                try
+                {
+                    var found = await session.ReaderData.LoadList(true, false, 0, request.Token);
+                    request.Token.ThrowIfCancellationRequested();
+                    MergeList(found);
+                    notice.Text = found.Count > 0
+                        ? $"Входящие обновлены: {DateTime.Now:HH:mm}. Писем в списке: {letters.Count}."
+                        : "Новые входящие не получены. Кэш сохранён; проверьте вход в Mail.ru.";
+                    return;
+                }
+                catch (OperationCanceledException) when (!lifetime.IsCancellationRequested && request.IsCancellationRequested) { /* Retry after foreground reading, never during a reply. */ }
+                finally { if (ReferenceEquals(listRefresh, request)) listRefresh = null; }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch { if (!lifetime.IsCancellationRequested) notice.Text = "Не удалось обновить входящие. Сохранённые письма доступны; ↻ — повторить."; }
+    }
+    private void MergeList(IEnumerable<ReaderLetter> found)
+    {
+        var selectedUrl = (list.SelectedItem as ReaderLetter)?.Url;
+        var listScroll = FindScroll(list);
+        var offset = listScroll?.VerticalOffset ?? 0;
+        var anchorIndex = Math.Clamp((int)offset, 0, Math.Max(0, list.Items.Count - 1));
+        var anchorUrl = list.Items.Count > 0 ? (list.Items[anchorIndex] as ReaderLetter)?.Url : null;
+        var merged = letters.ToDictionary(x => x.Url, StringComparer.Ordinal);
+        foreach (var raw in found)
+            if (ReaderData.Clean(raw) is { } letter)
+                merged[letter.Url] = merged.TryGetValue(letter.Url, out var old) ? MessageCache.MergeMetadata(old, letter) : letter;
+        restoring = true;
+        try
+        {
+            letters.Clear(); letters.AddRange(ReaderChronology.NewestFirst(merged.Values));
+            knownLetters.Clear(); list.Items.Clear();
+            foreach (var letter in letters) { knownLetters.Add(letter.Url); list.Items.Add(letter); }
+            list.SelectedItem = letters.FirstOrDefault(x => x.Url == selectedUrl);
+            if (selectedLetter is not null && merged.TryGetValue(selectedLetter.Url, out var updated)) selectedLetter = updated;
+            UpdateLayout();
+            var newAnchor = letters.FindIndex(x => x.Url == anchorUrl);
+            listScroll?.ScrollToVerticalOffset(newAnchor >= 0 ? newAnchor + offset - anchorIndex : offset);
+        }
+        finally { restoring = false; }
+        // Do not rebuild the body: retain scroll, manually loaded images and the reading position.
     }
     private void AddLetter(ReaderLetter letter)
     {
@@ -267,6 +332,8 @@ public sealed class ReaderPane : Grid
         if (searchBox.Text.Length > 0) await SearchSaved("");
         if (MessageBox.Show(Window.GetWindow(this), "Заранее загрузить весь ящик через Mail.ru?\n\nПриложение обойдёт стандартные и доступные пользовательские папки, включая спам и корзину. Открытие писем может пометить их прочитанными.\n\nТекст и ссылки на картинки сохранятся на этом компьютере в кэше, зашифрованном для вашей учётной записи Windows. Картинки и вложения автоматически не скачиваются. Лимит — 512 МБ на профиль. Существующий кэш будет дополнен.\n\nЗагрузка может занять долгое время. Её можно остановить; сохранённое останется. Начать?", "Кэш всего ящика", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
         batch = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        entryRefreshNeeded = false;
+        listRefresh?.Cancel();
         loading = true; list.IsEnabled = false; cacheButton.Content = "Остановить";
         try
         {
@@ -281,6 +348,7 @@ public sealed class ReaderPane : Grid
     }
     public void Close()
     {
+        listRefresh?.Cancel();
         DetachReply();
         session.ReaderState = new ReaderPosition(letters.ToArray(), selectedLetter?.Url, FindScroll(list)?.VerticalOffset ?? 0,
             ((ScrollViewer)((DockPanel)Children[1]).Children[1]).VerticalOffset);
@@ -301,12 +369,14 @@ public sealed class ReaderPane : Grid
         try
         {
             notice.Text = "Загрузка…";
+            entryRefreshNeeded = false;
+            listRefresh?.Cancel();
             if (refresh) scrollOffset = 0;
             if (more) scrollOffset += 600;
             var found = await session.ReaderData.LoadList(refresh, more, scrollOffset, lifetime.Token);
             lifetime.Token.ThrowIfCancellationRequested();
-            if (refresh) { cache.Clear(); selectedLetter = null; letters.Clear(); knownLetters.Clear(); list.Items.Clear(); body.Children.Clear(); }
-            foreach (var letter in found ?? []) AddLetter(letter);
+            if (refresh) MergeList(found);
+            else foreach (var letter in found) AddLetter(letter);
             notice.Text = letters.Count == 0 ? "Откройте список писем в Mail.ru и включите режим снова. Возможно, нужен вход в аккаунт." : $"Загружено: {letters.Count}. Показаны письма с открытой страницы.";
         }
         catch (OperationCanceledException) { }
@@ -317,6 +387,7 @@ public sealed class ReaderPane : Grid
     {
         if (loading && !readingMessage || IsReplyVisible || lifetime.IsCancellationRequested || !NavigationPolicy.IsMail(letter.Url)) return;
         var generation = ++readGeneration;
+        listRefresh?.Cancel();
         messageRead?.Cancel();
         using var request = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
         messageRead = request; var token = request.Token;

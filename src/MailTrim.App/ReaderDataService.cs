@@ -48,6 +48,9 @@ public sealed class ReaderDataService : IDisposable
             {
                 var clean = rows.Select(ReaderData.Clean).OfType<ReaderLetter>().ToList();
                 foreach (var letter in clean) session.Cache.RefreshMetadata(letter);
+                ct.ThrowIfCancellationRequested();
+                try { await Task.Run(() => session.Cache.SaveHeaders(clean), ct); }
+                catch (Exception ex) when (ex is IOException or System.Security.Cryptography.CryptographicException or UnauthorizedAccessException) { /* Fresh rows remain usable if local storage is unavailable. */ }
                 return ReaderChronology.NewestFirst(clean);
             }
             await Task.Delay(400, ct);

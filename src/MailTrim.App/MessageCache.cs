@@ -22,7 +22,50 @@ public sealed class MessageCache
         lock (gate)
         {
             if (!Directory.Exists(directory)) return [];
-            return ReaderChronology.NewestFirst(Directory.EnumerateFiles(directory, "*.bin").Select(ReadFile).Where(x => x is not null).Select(x => x!.Letter));
+            var letters = Directory.EnumerateFiles(directory, "*.bin").Select(ReadFile).Where(x => x is not null).Select(x => x!.Letter).ToDictionary(x => x.Url, StringComparer.Ordinal);
+            foreach (var letter in ReadHeaders()) letters[letter.Url] = letters.TryGetValue(letter.Url, out var old) ? MergeMetadata(old, letter) : letter;
+            return ReaderChronology.NewestFirst(letters.Values);
+        }
+    }
+    public static ReaderLetter MergeMetadata(ReaderLetter old, ReaderLetter fresh) =>
+        ReaderChronology.DateKey(fresh) is null
+            ? fresh with { Date = old.Date, DateHint = old.DateHint, ReceivedAt = old.ReceivedAt, CapturedAt = old.CapturedAt }
+            : old.ReceivedAt is not null && fresh.ReceivedAt is null ? fresh with { ReceivedAt = old.ReceivedAt } : fresh;
+    private long StoredBytesExcept(string path) => Directory.EnumerateFiles(directory)
+        .Where(p => p != path && (p.EndsWith(".bin") || Path.GetFileName(p) == "headers.index"))
+        .Sum(p => new FileInfo(p).Length);
+    private List<ReaderLetter> ReadHeaders()
+    {
+        try
+        {
+            var path = Path.Combine(directory, "headers.index");
+            if (!File.Exists(path) || new FileInfo(path).Length > 16_000_000) return [];
+            var bytes = ProtectedData.Unprotect(File.ReadAllBytes(path), entropy, DataProtectionScope.CurrentUser);
+            try { return (JsonSerializer.Deserialize<List<ReaderLetter>>(bytes, FilterRules.Json) ?? []).Take(50_000).Select(ReaderData.Clean).OfType<ReaderLetter>().ToList(); }
+            finally { CryptographicOperations.ZeroMemory(bytes); }
+        }
+        catch (Exception ex) when (ex is IOException or CryptographicException or JsonException or UnauthorizedAccessException) { return []; }
+    }
+    public void SaveHeaders(IEnumerable<ReaderLetter> input)
+    {
+        lock (gate)
+        {
+            var letters = ReadHeaders().GroupBy(x => x.Url).ToDictionary(x => x.Key, x => x.Last(), StringComparer.Ordinal);
+            foreach (var raw in input)
+                if (ReaderData.Clean(raw) is { } letter)
+                    letters[letter.Url] = letters.TryGetValue(letter.Url, out var old) ? MergeMetadata(old, letter) : letter;
+            if (letters.Count > 50_000) throw new IOException("cache_header_limit");
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(ReaderChronology.NewestFirst(letters.Values), FilterRules.Json);
+            try
+            {
+                if (bytes.Length > 15_000_000) throw new IOException("cache_index_limit");
+                var encrypted = ProtectedData.Protect(bytes, entropy, DataProtectionScope.CurrentUser);
+                Directory.CreateDirectory(directory);
+                var path = Path.Combine(directory, "headers.index");
+                if (StoredBytesExcept(path) + encrypted.Length > 512_000_000) throw new IOException("cache_size_limit");
+                File.WriteAllBytes(path + ".tmp", encrypted); File.Move(path + ".tmp", path, true);
+            }
+            finally { CryptographicOperations.ZeroMemory(bytes); }
         }
     }
     public void RefreshMetadata(ReaderLetter letter)
@@ -57,7 +100,16 @@ public sealed class MessageCache
                 found.Add(entry.Letter);
         }
         token.ThrowIfCancellationRequested();
-        return ReaderChronology.NewestFirst(found);
+        lock (gate)
+        {
+            var matches = found.ToDictionary(x => x.Url, StringComparer.Ordinal);
+            foreach (var letter in ReadHeaders())
+            {
+                token.ThrowIfCancellationRequested();
+                if (matches.ContainsKey(letter.Url) || Matches(letter, query)) matches[letter.Url] = matches.TryGetValue(letter.Url, out var old) ? MergeMetadata(old, letter) : letter;
+            }
+            return ReaderChronology.NewestFirst(matches.Values);
+        }
     }
     public static bool Matches(ReaderLetter letter, string query) =>
         letter.Sender.Contains(query, StringComparison.OrdinalIgnoreCase)
@@ -92,7 +144,7 @@ public sealed class MessageCache
                 var encrypted = ProtectedData.Protect(bytes, entropy, DataProtectionScope.CurrentUser);
                 var path = PathFor(letter.Url);
                 // Explicit, bounded storage. Never silently evict a mailbox being downloaded.
-                if (Directory.EnumerateFiles(directory, "*.bin").Sum(p => new FileInfo(p).Length) + encrypted.Length > 512_000_000)
+                if (StoredBytesExcept(path) + encrypted.Length > 512_000_000)
                     throw new IOException("cache_size_limit");
                 File.WriteAllBytes(path + ".tmp", encrypted);
                 File.Move(path + ".tmp", path, true);
@@ -105,7 +157,7 @@ public sealed class MessageCache
         lock (gate)
         {
             if (!Directory.Exists(directory)) return;
-            foreach (var path in Directory.EnumerateFiles(directory).Where(p => p.EndsWith(".bin") || p.EndsWith(".tmp"))) File.Delete(path);
+            foreach (var path in Directory.EnumerateFiles(directory).Where(p => p.EndsWith(".bin") || p.EndsWith(".tmp") || Path.GetFileName(p) == "headers.index")) File.Delete(path);
         }
     }
     private sealed record CacheEntry(ReaderLetter Letter, List<ReaderBlock> Blocks);
