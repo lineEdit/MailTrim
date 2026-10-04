@@ -74,6 +74,13 @@ internal static class Program
                 await a.Initialize(id); await b.Initialize(secondProfileId);
                 a.View.CoreWebView2.Stop(); b.View.CoreWebView2.Stop();
                 ConfigureFixture(a); ConfigureFixture(b);
+                await Navigate(a, "https://e.mail.ru/__mailtrim_startup");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("startupCSS && startupGuard && startupKnownHidden") == "true", "startup CSS and guard precede page scripts and DOMContentLoaded");
+                await WaitForScript(a, "startupFrames > 0 && !document.documentElement.hasAttribute('data-mailtrim-pending')");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("!startupLeaked && getComputedStyle(document.getElementById('known-banner')).display === 'none' && getComputedStyle(document.getElementById('semantic-banner')).display === 'none' && getComputedStyle(document.documentElement).opacity !== '0'") == "true", "startup frames never expose top banners and cleaned page becomes visible");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('startup-mail').getBoundingClientRect().height > 0") == "true", "startup guard preserves real message content");
+                await a.View.CoreWebView2.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, false, false));
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("!document.documentElement.hasAttribute('data-mailtrim-pending') && getComputedStyle(document.getElementById('known-banner')).display !== 'none' && getComputedStyle(document.getElementById('semantic-banner')).display !== 'none'") == "true", "pausing filters releases startup guard and restores banners");
                 await Navigate(a, "https://e.mail.ru/__mailtrim_fixture");
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("getComputedStyle(document.querySelector('[data-testid=advertising]')).display") == "\"none\"", "cosmetics injected on trusted origin");
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("getComputedStyle(document.getElementById('message')).display") != "\"none\"", "message content remains visible");
@@ -573,6 +580,13 @@ internal static class Program
         session.View.CoreWebView2.WebResourceRequested += async (_, e) =>
         {
             var fixturePath = new Uri(e.Request.Uri).AbsolutePath;
+            if (fixturePath == "/__mailtrim_startup")
+                e.Response = session.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "mail-startup.html")))), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
+            if (fixturePath == "/__mailtrim_startup_hold")
+            {
+                using var deferral = e.GetDeferral(); await Task.Delay(1800);
+                e.Response = session.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes("void 0;")), 200, "OK", "Content-Type: application/javascript\r\nCache-Control: no-store");
+            }
             if (new[] { "/inbox/", "/sent/", "/archive/", "/drafts/", "/spam/", "/trash/", "/folder/custom/" }.Contains(fixturePath))
             {
                 var messagePath = fixturePath == "/folder/custom/" ? "__mailtrim_reader_second" : "__mailtrim_reader";

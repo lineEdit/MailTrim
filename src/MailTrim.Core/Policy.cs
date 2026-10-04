@@ -84,7 +84,8 @@ public static class CosmeticScript
           const widened = new Set();
           const stretched = new Set();
           const watched = new WeakSet();
-          let observer, resizeObserver, timer;
+          let observer, rootObserver, resizeObserver, timer, revealFrame, revealTimeout;
+          const initialGuard = compactLayout && document.readyState === 'loading';
           // Mail.ru's hashed content wrapper can retain a bottom ad reservation.
           // Only expand a sole visible child aligned with a viewport-height parent.
           const fitMailArea = () => {
@@ -235,6 +236,7 @@ public static class CosmeticScript
             if (!style) { style = document.createElement('style'); style.id = id; document.documentElement.appendChild(style); }
             style.textContent = selectors.filter(s => { try { document.querySelector(s); return true; } catch { return false; } })
               .map(s => s + ' { display: none !important; }').join('\n')
+              + (initialGuard ? '\nhtml[data-mailtrim-pending="true"] { opacity: 0 !important; }' : '')
               + (labeledAds ? '\n[data-mailtrim-ad="true"] { display: none !important; }' : '')
               + (compactLayout ? '\n[data-mailtrim-wide="true"] { width: 100% !important; max-width: none !important; margin-inline: 0 !important; box-sizing: border-box !important; }\n[data-mailtrim-fill="true"] { height: 100% !important; }\n[data-mailtrim-viewport="true"] { height: calc(100vh - var(--mailtrim-top)) !important; }\n.thread > .thread__footer:not(.letter-body *, .letter__body *, .compose *, .compose-app *, [contenteditable="true"] *):not(:has(button, input, textarea, [contenteditable="true"])) { display: none !important; }' : '');
           };
@@ -247,8 +249,25 @@ public static class CosmeticScript
             if (labeledAds) { hideLabeledAds(); dismissStorePromo(); }
             fitMailArea();
           };
-          const schedule = () => { if (!timer) timer = setTimeout(scan, 100); };
+          const schedule = () => {
+            // Restore early CSS immediately; evaluate newly inserted ads before the next paint.
+            if (document.documentElement && !document.getElementById(id)) apply();
+            if (timer == null) timer = requestAnimationFrame(scan);
+          };
+          const reveal = () => {
+            try { scan(); }
+            finally { document.documentElement?.removeAttribute('data-mailtrim-pending'); clearTimeout(revealTimeout); }
+          };
+          const ready = () => { scan(); revealFrame = requestAnimationFrame(reveal); };
           const start = () => {
+            if (!document.documentElement || observer) return;
+            rootObserver?.disconnect();
+            if (initialGuard) {
+              document.documentElement.setAttribute('data-mailtrim-pending', 'true');
+              // Fail open on slow scripts or throttled background frames; never strand login.
+              revealTimeout = setTimeout(reveal, 1500);
+              document.addEventListener('DOMContentLoaded', ready, {once:true});
+            }
             resizeObserver = new ResizeObserver(schedule);
             apply(); scan();
             observer = new MutationObserver(schedule);
@@ -256,8 +275,9 @@ public static class CosmeticScript
             window.addEventListener('resize', schedule);
           };
           window.__mailtrimCleanup = () => {
-            observer?.disconnect(); resizeObserver?.disconnect(); clearTimeout(timer);
-            document.removeEventListener('DOMContentLoaded', start);
+            observer?.disconnect(); rootObserver?.disconnect(); resizeObserver?.disconnect(); cancelAnimationFrame(timer); cancelAnimationFrame(revealFrame); clearTimeout(revealTimeout);
+            document.removeEventListener('DOMContentLoaded', ready);
+            document.documentElement?.removeAttribute('data-mailtrim-pending');
             window.removeEventListener('resize', schedule);
             for (const node of marked) node.removeAttribute('data-mailtrim-ad');
             for (const node of widened) node.removeAttribute('data-mailtrim-wide');
@@ -265,8 +285,9 @@ public static class CosmeticScript
             for (const node of stretched) { node.removeAttribute('data-mailtrim-viewport'); node.style.removeProperty('--mailtrim-top'); }
             document.getElementById(id)?.remove();
           };
-          if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, {once:true});
-          else start();
+          // WebView2 injects this before page scripts. Attach CSS as soon as the root exists.
+          if (document.documentElement) start();
+          else { rootObserver = new MutationObserver(start); rootObserver.observe(document, {childList:true}); }
         })();
         """.Replace("__SELECTORS__", JsonSerializer.Serialize(selectors)).Replace("__LABELED__", enabled && rules.RemoveLabeledAds ? "true" : "false").Replace("__ENABLED__", enabled ? "true" : "false");
     }

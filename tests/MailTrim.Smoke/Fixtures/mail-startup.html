@@ -1,0 +1,20 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Startup filtering fixture</title></head><body>
+<div id="known-banner" class="js-banner-wrapper-container" style="height:90px"><div class="trg-b-fixture">Known top banner</div></div>
+<div id="semantic-banner" style="height:90px;width:600px"><span style="font-size:12px">Реклама 0+</span><div>Hashed top banner</div></div>
+<div class="letter-body" id="startup-mail">Synthetic letter remains readable</div>
+<script>
+window.startupCSS = !!document.getElementById('mailtrim-cosmetic-style');
+window.startupGuard = document.documentElement.hasAttribute('data-mailtrim-pending');
+window.startupKnownHidden = getComputedStyle(document.getElementById('known-banner')).display === 'none';
+window.startupLeaked = false;
+window.startupFrames = 0;
+function sampleStartupFrame() {
+  window.startupFrames++;
+  if (getComputedStyle(document.documentElement).opacity !== '0' &&
+      ['known-banner','semantic-banner'].some(id => getComputedStyle(document.getElementById(id)).display !== 'none')) window.startupLeaked = true;
+  if (document.readyState === 'loading' || window.startupFrames < 12) requestAnimationFrame(sampleStartupFrame);
+}
+requestAnimationFrame(sampleStartupFrame);
+</script>
+<script src="/__mailtrim_startup_hold"></script>
+</body></html>
