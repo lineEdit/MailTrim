@@ -13,7 +13,7 @@ public sealed class ReaderPane : Grid
     private readonly BrowserSession session;
     private readonly Action original;
     private readonly ListBox list = new() { BorderThickness = new Thickness(0) };
-    private readonly StackPanel body = new() { Margin = new Thickness(26), MaxWidth = 850 };
+    private readonly StackPanel body = new() { Margin = new Thickness(16), HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly TextBlock notice = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(8) };
     private readonly List<ReaderLetter> letters = [];
     private readonly HashSet<string> knownLetters = [];
@@ -104,7 +104,7 @@ public sealed class ReaderPane : Grid
         list.ItemTemplate = (DataTemplate)System.Windows.Markup.XamlReader.Parse("""
         <DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
          <StackPanel Margin="6">
-          <TextBlock FontWeight="SemiBold" TextTrimming="CharacterEllipsis"><TextBlock.Text><MultiBinding StringFormat="{}{0} · {1}"><Binding Path="Sender"/><Binding Path="Date"/></MultiBinding></TextBlock.Text></TextBlock>
+          <TextBlock FontWeight="SemiBold" TextTrimming="CharacterEllipsis"><TextBlock.Text><MultiBinding StringFormat="{}{0} · {1}"><Binding Path="Sender"/><Binding Path="DateLabel"/></MultiBinding></TextBlock.Text></TextBlock>
           <TextBlock Text="{Binding Subject}" TextWrapping="Wrap" MaxHeight="40" Margin="0,3,0,3"/>
           <TextBlock Text="{Binding Preview}" TextTrimming="CharacterEllipsis" Opacity="0.65"/>
          </StackPanel>
@@ -140,6 +140,7 @@ public sealed class ReaderPane : Grid
             try { session.Cache.Clear(); cache.Clear(); notice.Text = "Кэш удалён."; } catch { notice.Text = "Не удалось очистить кэш."; }
         };
         notice.FontSize = 11; notice.MaxHeight = 72;
+        tools.Children.Add(new TextBlock { Text = "Новые сверху · без точной даты — в конце", FontSize = 11, Margin = new Thickness(8, 2, 8, 4), TextWrapping = TextWrapping.Wrap });
         tools.Children.Add(notice); left.Children.Add(list);        list.SelectionChanged += async (_, _) => { if (!restoring && list.SelectedItem is ReaderLetter letter) await Read(letter); };
         var right = new DockPanel(); SetColumn(right, 2); Children.Add(right);
         var messageActions = new WrapPanel();
@@ -255,7 +256,10 @@ public sealed class ReaderPane : Grid
     {
         if (lifetime.IsCancellationRequested || ReaderData.Clean(letter) is not { } clean || !knownLetters.Add(clean.Url)) return;
         letter = clean;
-        letters.Add(letter); list.Items.Add(letter);
+        var index = letters.BinarySearch(letter, Comparer<ReaderLetter>.Create(ReaderChronology.Compare));
+        if (index < 0) index = ~index;
+        letters.Insert(index, letter);
+        list.Items.Insert(index, letter);
     }    private async Task RequestCache()
     {
         if (batch is not null) { batch.Cancel(); return; }
@@ -336,7 +340,7 @@ public sealed class ReaderPane : Grid
                 }
             }            token.ThrowIfCancellationRequested();
             if (generation != readGeneration || selectedLetter?.Url != letter.Url) return;
-            body.Children.Clear(); AddText(letter.Subject, 24); AddText(letter.Sender + " · " + letter.Date, 13);
+            body.Children.Clear(); AddText(letter.Subject, 24); AddText(letter.Sender + " · " + letter.DateLabel, 13);
             if (blocks is null || blocks.Count == 0) AddText("Не удалось извлечь содержимое. Откройте письмо в Mail.ru.");
             foreach (var block in blocks ?? [])
             {

@@ -9,6 +9,14 @@ foreach (var url in new[] { "https://e.mail.ru.evil.test/", "https://evilmail.ru
 Check(!NavigationPolicy.IsExternal("file:///C:/Windows"), "no shell file launch");
 Check(!NavigationPolicy.IsExternal("ms-settings:privacy"), "no arbitrary protocols");
 Check(!NavigationPolicy.IsExternal("https://user:pass@example.org"), "no URL credentials");
+var observed = new DateTimeOffset(2026,10,4,10,0,0,TimeSpan.FromHours(3));
+ReaderLetter Dated(string url, string date, DateTimeOffset? captured = null) => new("https://e.mail.ru/inbox/" + url, "s", "t", "p", date, CapturedAt: captured);
+var ordered = ReaderChronology.NewestFirst(new[] { Dated("old", "17.12.25"), Dated("unknown", "19:59"), Dated("recent", "3 окт", observed), Dated("today", "0:20", observed) });
+Check(ordered.Select(l => l.Url.Split('/').Last()).SequenceEqual(new[] { "today", "recent", "old", "unknown" }), "reader sorts captured and explicit dates newest first with unknown times last");
+Check(ReaderChronology.DateKey(Dated("relative", "вчера 23:40", observed)) == new DateTimeOffset(2026,10,3,23,40,0,TimeSpan.FromHours(3)), "relative time uses capture day");
+Check(ReaderChronology.DateKey(Dated("year", "31 дек", observed))?.Year == 2025, "short dates handle previous year");
+Check(ReaderChronology.DateKey(Dated("bad", "99:99", observed)) is null, "invalid date is unknown rather than invented");
+Check(ReaderChronology.DateKey(Dated("hint", "0:20", observed) with { DateHint = "30.09.2026 19:59" })?.Day == 30, "full official tooltip date wins over abbreviated display");
 var clean = ReaderData.Clean(new[] { new ReaderBlock("hello", "javascript:alert(1)"), new ReaderBlock("data", "data:image/png;base64,a"), new ReaderBlock("credentials", "https://user:pass@example.org/a"), new ReaderBlock("image", "https://example.org/a.png") });
 Check(clean.Take(3).All(b => b.Image == "") && clean[3].Image.EndsWith("a.png"), "clean data rejects executable and credentialed image references");
 Check(ReaderData.Clean(Enumerable.Repeat(new ReaderBlock(new string('a', 30_000), ""), 1000)).Sum(b => b.Text.Length + b.Image.Length) <= 500_000, "clean message data is bounded");

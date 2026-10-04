@@ -22,7 +22,18 @@ public sealed class MessageCache
         lock (gate)
         {
             if (!Directory.Exists(directory)) return [];
-            return Directory.EnumerateFiles(directory, "*.bin").Select(ReadFile).Where(x => x is not null).Select(x => x!.Letter).ToList();
+            return ReaderChronology.NewestFirst(Directory.EnumerateFiles(directory, "*.bin").Select(ReadFile).Where(x => x is not null).Select(x => x!.Letter));
+        }
+    }
+    public void RefreshMetadata(ReaderLetter letter)
+    {
+        lock (gate)
+        {
+            var old = ReadFile(PathFor(letter.Url));
+            if (old is null || ReaderChronology.DateKey(letter) is null) return;
+            if (ReaderChronology.DateKey(old.Letter) is not null && (old.Letter.ReceivedAt is not null || letter.ReceivedAt is null)) return;
+            try { Save(letter, old.Blocks); }
+            catch (Exception ex) when (ex is IOException or CryptographicException or UnauthorizedAccessException) { /* Keep the existing readable cache. */ }
         }
     }
     public List<ReaderBlock>? Get(string url)
@@ -46,7 +57,7 @@ public sealed class MessageCache
                 found.Add(entry.Letter);
         }
         token.ThrowIfCancellationRequested();
-        return found;
+        return ReaderChronology.NewestFirst(found);
     }
     public static bool Matches(ReaderLetter letter, string query) =>
         letter.Sender.Contains(query, StringComparison.OrdinalIgnoreCase)

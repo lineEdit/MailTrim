@@ -40,6 +40,16 @@ internal static class Program
                 File.WriteAllText(Path.Combine(customRoot, "rules.json"), System.Text.Json.JsonSerializer.Serialize(custom, FilterRules.Json));
                 var customStore = new LocalStore(customRoot);
                 Check(customStore.Rules.HideSelectors.SequenceEqual([".user-rule"]), "custom rules preserved");
+                var chronologyCache = new MessageCache(root, Guid.NewGuid());
+                var captured = DateTimeOffset.Now;
+                var oldDate = new ReaderLetter("https://e.mail.ru/inbox/chronology-old", "Chrono", "Old", "", "17.12.25");
+                var newDate = new ReaderLetter("https://e.mail.ru/inbox/chronology-new", "Chrono", "New", "", "0:20", CapturedAt: captured);
+                var unknownDate = new ReaderLetter("https://e.mail.ru/inbox/chronology-unknown", "Chrono", "Unknown", "", "19:59");
+                foreach (var letter in new[] { unknownDate, newDate, oldDate }) chronologyCache.Save(letter, [new ReaderBlock("Chrono text", "")]);
+                Check(chronologyCache.List().Select(l => l.Subject).SequenceEqual(new[] { "New", "Old", "Unknown" }), "encrypted cache lists messages by date instead of file order");
+                Check(chronologyCache.Search("Chrono", default).Select(l => l.Subject).SequenceEqual(new[] { "New", "Old", "Unknown" }), "cache search preserves newest-first ordering");
+                chronologyCache.RefreshMetadata(unknownDate with { ReceivedAt = captured.AddDays(-1), CapturedAt = captured });
+                Check(chronologyCache.List()[1].Subject == "Unknown" && chronologyCache.Get(unknownDate.Url)![0].Text == "Chrono text", "fresh date metadata corrects old cache ordering without changing body");
                 var paused = false;
                 var a = new BrowserSession(store, window, _ => { }, () => paused, _ => { });
                 var b = new BrowserSession(store, window, _ => { }, () => paused, _ => { });
@@ -94,8 +104,15 @@ internal static class Program
                 await WaitForScript(a, "Math.abs(document.getElementById('mail-scroll').getBoundingClientRect().bottom-innerHeight)<2");
                 Check(true, "reserved bottom area reclaimed by mail scroll viewport");
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("getComputedStyle(document.getElementById('site-footer')).display === 'none' && getComputedStyle(document.getElementById('body-footer')).display !== 'none' && document.getElementById('mail-action').getBoundingClientRect().height > 0") == "true", "only site footer hidden; message footer and actions preserved");
+                await a.View.CoreWebView2.ExecuteScriptAsync("""
+                    document.body.insertAdjacentHTML('beforeend', `<div id="wide-parent" style="position:fixed;inset:0"><div id="wide-mail" style="width:80%;margin:auto;height:80vh"><a href="/inbox/">Inbox</a><div class="letter-list__react"></div></div></div>`);
+                    """);
+                await WaitForScript(a, "document.getElementById('wide-mail').getBoundingClientRect().width >= document.getElementById('wide-parent').getBoundingClientRect().width-2");
+                Check(true, "centered mail layout uses window width");
                 await a.View.CoreWebView2.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, false, false));
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('reserved').getBoundingClientRect().height === 302 && document.getElementById('mail-scroll').getBoundingClientRect().height === 250 && getComputedStyle(document.getElementById('site-footer')).display !== 'none' && !document.querySelector('[data-mailtrim-viewport]')") == "true", "pause restores original layout and scroll height");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('wide-mail').getBoundingClientRect().width < innerWidth*.85") == "true", "pause restores original horizontal margins");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('wide-parent').remove()");
                 await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('space-test').remove()");
                 await a.View.CoreWebView2.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, true, false));
                 await a.View.CoreWebView2.ExecuteScriptAsync("""
@@ -232,6 +249,7 @@ internal static class Program
                 readerList.SelectedIndex = 0;
                 for (int i = 0; i < 100 && pane.IsLoading; i++) await Task.Delay(100);
                 var readerBody = (StackPanel)((ScrollViewer)((DockPanel)pane.Children[1]).Children[1]).Content;
+                Check(double.IsPositiveInfinity(readerBody.MaxWidth) && readerBody.Margin.Left == 16, "reader body uses available width with small side padding");
                 Check(readerBody.Children.OfType<TextBlock>().Any(t => t.Text.Contains("Safe text")), "native reader renders message after canonical URL change with fallback body container");
                 Check(!completedReaderNavigation, "reader displays text before slow image finishes loading");
                 var readerNavigations = 0;
@@ -299,8 +317,8 @@ internal static class Program
 
                 a.Cache.Clear();
                 a.ReaderState = new ReaderPosition(new[] {
-                    new ReaderLetter("https://e.mail.ru/__pipeline_slow", "old", "Old", "", ""),
-                    new ReaderLetter("https://e.mail.ru/__pipeline_fast", "new", "New", "", "") }, null, 0, 0);
+                    new ReaderLetter("https://e.mail.ru/__pipeline_slow", "old", "Old", "", "", ReceivedAt: DateTimeOffset.UtcNow),
+                    new ReaderLetter("https://e.mail.ru/__pipeline_fast", "new", "New", "", "", ReceivedAt: DateTimeOffset.UtcNow.AddDays(-1)) }, null, 0, 0);
                 var racePane = new ReaderPane(a, () => { }); host.Children.Add(racePane); await racePane.Start();
                 var raceList = ((DockPanel)racePane.Children[0]).Children.OfType<ListBox>().Single();
                 raceList.SelectedIndex = 0; await Task.Delay(100); raceList.SelectedIndex = 1;

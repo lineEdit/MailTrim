@@ -44,7 +44,12 @@ public sealed class ReaderDataService : IDisposable
         {
             ct.ThrowIfCancellationRequested();
             var rows = await source.Extract<List<ReaderLetter>>(ReaderScript.List);
-            if (rows?.Count > 0) return rows.Select(ReaderData.Clean).OfType<ReaderLetter>().ToList();
+            if (rows?.Count > 0)
+            {
+                var clean = rows.Select(ReaderData.Clean).OfType<ReaderLetter>().ToList();
+                foreach (var letter in clean) session.Cache.RefreshMetadata(letter);
+                return ReaderChronology.NewestFirst(clean);
+            }
             await Task.Delay(400, ct);
         }
         return new List<ReaderLetter>();
@@ -54,7 +59,10 @@ public sealed class ReaderDataService : IDisposable
         token.ThrowIfCancellationRequested();
         letter = ReaderData.Clean(letter) ?? throw new IOException("mail_origin_required");
         if (session.Cache.Get(letter.Url) is { } cached)
+        {
+            session.Cache.RefreshMetadata(letter);
             return Task.FromResult(new ReaderDocument(letter, ReaderData.Clean(cached).AsReadOnly(), true, true));
+        }
         return Enqueue(async ct =>
         {
             var blocks = ReaderData.Clean(await source.Read(letter, ct));

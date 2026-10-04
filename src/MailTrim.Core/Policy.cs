@@ -81,12 +81,15 @@ public static class CosmeticScript
           const protectedContent = '.letter-body, .letter__body, .letter-body__body, .compose-app, .compose, [contenteditable="true"], [role="textbox"], textarea, input';
           const marked = new Set();
           const expanded = new Set();
+          const widened = new Set();
           const stretched = new Set();
           const watched = new WeakSet();
           let observer, resizeObserver, timer;
           // Mail.ru's hashed content wrapper can retain a bottom ad reservation.
           // Only expand a sole visible child aligned with a viewport-height parent.
           const fitMailArea = () => {
+            for (const node of widened) node.removeAttribute('data-mailtrim-wide');
+            widened.clear();
             for (const node of expanded) node.removeAttribute('data-mailtrim-fill');
             expanded.clear();
             for (const node of stretched) { node.removeAttribute('data-mailtrim-viewport'); node.style.removeProperty('--mailtrim-top'); }
@@ -98,6 +101,18 @@ public static class CosmeticScript
             };
             for (const root of document.querySelectorAll('.thread, .letter-list__react')) {
               if (root.closest(protectedContent)) continue;
+              // Expand a centered mail layout only when its parent fills the window.
+              for (let node = root.parentElement, depth = 0; node && depth < 12; node = node.parentElement, depth++) {
+                if (node.matches('body,html')) break;
+                const r = node.getBoundingClientRect(), p = node.parentElement?.getBoundingClientRect();
+                if (!p || node.querySelector('.compose-app,.compose,[contenteditable="true"],textarea,input[type="password"]')) continue;
+                const gap = r.left - p.left;
+                if (p.width < innerWidth * .95 || r.width < innerWidth * .65 || r.height < innerHeight * .5 || gap < 32
+                    || Math.abs(gap - (p.right-r.right)) > 4) continue;
+                const folder = [...node.querySelectorAll('a[href]')].some(a => { try { const u=new URL(a.href); return u.origin===location.origin && /^\/inbox\/?$/.test(u.pathname); } catch { return false; } });
+                if (!folder) continue;
+                node.setAttribute('data-mailtrim-wide','true'); widened.add(node); break;
+              }
               // The virtualized list keeps the old banner height in its inner boxes,
               // while its outer root already has the full (and overflowing) page height.
               if (root.matches('.letter-list__react')) {
@@ -221,7 +236,7 @@ public static class CosmeticScript
             style.textContent = selectors.filter(s => { try { document.querySelector(s); return true; } catch { return false; } })
               .map(s => s + ' { display: none !important; }').join('\n')
               + (labeledAds ? '\n[data-mailtrim-ad="true"] { display: none !important; }' : '')
-              + (compactLayout ? '\n[data-mailtrim-fill="true"] { height: 100% !important; }\n[data-mailtrim-viewport="true"] { height: calc(100vh - var(--mailtrim-top)) !important; }\n.thread > .thread__footer:not(.letter-body *, .letter__body *, .compose *, .compose-app *, [contenteditable="true"] *):not(:has(button, input, textarea, [contenteditable="true"])) { display: none !important; }' : '');
+              + (compactLayout ? '\n[data-mailtrim-wide="true"] { width: 100% !important; max-width: none !important; margin-inline: 0 !important; box-sizing: border-box !important; }\n[data-mailtrim-fill="true"] { height: 100% !important; }\n[data-mailtrim-viewport="true"] { height: calc(100vh - var(--mailtrim-top)) !important; }\n.thread > .thread__footer:not(.letter-body *, .letter__body *, .compose *, .compose-app *, [contenteditable="true"] *):not(:has(button, input, textarea, [contenteditable="true"])) { display: none !important; }' : '');
           };
           const scan = () => {
             timer = null;
@@ -245,6 +260,7 @@ public static class CosmeticScript
             document.removeEventListener('DOMContentLoaded', start);
             window.removeEventListener('resize', schedule);
             for (const node of marked) node.removeAttribute('data-mailtrim-ad');
+            for (const node of widened) node.removeAttribute('data-mailtrim-wide');
             for (const node of expanded) node.removeAttribute('data-mailtrim-fill');
             for (const node of stretched) { node.removeAttribute('data-mailtrim-viewport'); node.style.removeProperty('--mailtrim-top'); }
             document.getElementById(id)?.remove();

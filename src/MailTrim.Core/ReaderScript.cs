@@ -9,8 +9,19 @@ public static class ReaderScript
       return [...document.querySelectorAll('a.js-letter-list-item')].slice(0,100).map(row=>{
         const atoms=[...row.querySelectorAll('*')].filter(e=>!e.closest('button,svg,aside') && e.getBoundingClientRect().height>0)
           .map(e=>({e,t:[...e.childNodes].filter(n=>n.nodeType===3).map(n=>n.textContent).join('').trim()})).filter(x=>x.t);
+        const last=atoms.at(-1)?.e;
+        const time=row.querySelector('time[datetime]');
+        const epoch=row.querySelector('[data-timestamp]')?.getAttribute('data-timestamp');
+        let received=null;
+        if(time && /^\d{4}-\d{2}-\d{2}T/.test(time.getAttribute('datetime')||'')) {
+          const value=Date.parse(time.getAttribute('datetime')); if(Number.isFinite(value))received=new Date(value).toISOString();
+        } else if(/^\d{10}(?:\d{3})?$/.test(epoch||'')) {
+          const value=Number(epoch)*(epoch.length===10?1000:1); if(value>0 && value<4102444800000)received=new Date(value).toISOString();
+        }
+        let hint='';
+        for(let e=last,n=0;e && e!==row && n<4;e=e.parentElement,n++) { if(e.getAttribute('title')) { hint=e.getAttribute('title').slice(0,150); break; } }
         return {url:row.href,sender:atoms[0]?.t||'',subject:atoms[1]?.t||'(без темы)',
-          preview:atoms.slice(2,-1).map(x=>x.t).join(' ').slice(0,300),date:atoms.at(-1)?.t||''};
+          preview:atoms.slice(2,-1).map(x=>x.t).join(' ').slice(0,300),date:atoms.at(-1)?.t||'',receivedAt:received,capturedAt:new Date().toISOString(),dateHint:hint};
       }).filter(x=>new URL(x.url).origin===location.origin);
     })()
     """;
@@ -40,6 +51,10 @@ public static class ReaderScript
     """;
 }
 
-public sealed record ReaderLetter(string Url, string Sender, string Subject, string Preview, string Date);
+public sealed record ReaderLetter(string Url, string Sender, string Subject, string Preview, string Date,
+    DateTimeOffset? ReceivedAt = null, DateTimeOffset? CapturedAt = null, string DateHint = "")
+{
+    [System.Text.Json.Serialization.JsonIgnore] public string DateLabel => ReaderChronology.DateKey(this) is null ? Date + " · дата не уточнена" : Date;
+}
 public sealed record ReaderBlock(string Text, string Image);
 
