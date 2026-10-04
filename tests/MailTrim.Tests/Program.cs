@@ -71,6 +71,8 @@ var releases = """
 Check(ReleaseCatalog.Select(releases, true)?.Tag == "v0.10.0", "updates compare numeric versions and skip drafts");
 Check(ReleaseCatalog.Select(releases, false)?.Tag == "v0.7.0", "stable channel excludes prereleases");
 Check(ReleaseCatalog.Select("[]", true) is null, "empty release channel is not a network error");
+Check(ReleasePackage.Name(new Version(0,12,9,0), DistributionKind.Standalone) == "MailTrim-0.12.9-win-x64.zip", "standalone update name stays compatible with old clients");
+Check(ReleasePackage.Name(new Version(0,12,10,0), DistributionKind.Lite) == "MailTrim-0.12.10-win-x64-lite.zip", "lite updates preserve edition and use release version");
 Check(ReleaseCatalog.Select("""{"tag_name":"v0.8.0","draft":false,"prerelease":false}""", false)?.Version == new Version(0,8,0,0), "single stable release normalized to assembly version");
 Check(ReleaseCatalog.Select("""[{"tag_name":"v0.8.0","draft":false,"prerelease":true}]""", false) is null, "no stable releases is an empty channel");
 Check(ReleaseCatalog.Select("""[{"tag_name":"v0.8.0","draft":false,"prerelease":true},{"tag_name":"v0.8.0","draft":false,"prerelease":false}]""", true)?.Prerelease == false, "stable release wins same-version tie");

@@ -12,8 +12,11 @@
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <MailTrimDistribution Condition="'$(SelfContained)' == 'true'">Standalone</MailTrimDistribution>
+    <MailTrimDistribution Condition="'$(MailTrimDistribution)' == ''">Lite</MailTrimDistribution>
   </PropertyGroup>
   <ItemGroup>
+    <AssemblyMetadata Include="MailTrimDistribution" Value="$(MailTrimDistribution)" />
     <Using Remove="System.Windows.Forms" />
     <Using Remove="System.Drawing" />
     <ProjectReference Include="../MailTrim.Core/MailTrim.Core.csproj" />

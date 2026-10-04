@@ -11,14 +11,21 @@ if (args.Length == 3 && args[0] == "--verify-package")
         throw new InvalidDataException("Published package version mismatch");
     Console.WriteLine("PASS actual published ZIP checksum, extraction and version");
     var packageRoot = Path.GetFullPath(args[2]);
+    var kind = Path.GetFileName(args[1]).EndsWith("-lite.zip", StringComparison.Ordinal) ? DistributionKind.Lite : DistributionKind.Standalone;
+    if (Path.GetFileName(args[1]) != ReleasePackage.Name(Assembly.GetExecutingAssembly().GetName().Version!, kind))
+        throw new InvalidDataException("Unexpected package name");
+    using var configuration = JsonDocument.Parse(File.ReadAllText(Path.Combine(packageRoot, "MailTrim.runtimeconfig.json")));
+    var requiresRuntime = configuration.RootElement.GetProperty("runtimeOptions").TryGetProperty("frameworks", out var frameworks);
+    if (requiresRuntime != (kind == DistributionKind.Lite) || requiresRuntime && !frameworks.EnumerateArray().Any(f => f.GetProperty("name").GetString() == "Microsoft.WindowsDesktop.App"))
+        throw new InvalidDataException("Package runtime requirement mismatch");
     var probeRoot = Path.Combine(packageRoot, "launch-verification");
     using var application = UpdateHandoff.Start(Path.Combine(packageRoot, "MailTrim.exe"), "--verify-package-launch", probeRoot);
     try { await application.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(90)); }
     catch (TimeoutException) { application.Kill(); await application.WaitForExitAsync(); throw; }
-    var expectedReport = "PASS " + Assembly.GetExecutingAssembly().GetName().Version + " WPF WebView2";
+    var expectedReport = "PASS " + Assembly.GetExecutingAssembly().GetName().Version + " WPF WebView2 " + kind;
     if (application.ExitCode != 0 || File.ReadAllText(Path.Combine(probeRoot, "package-launch.txt")) != expectedReport)
         throw new InvalidDataException("Published application launch failed");
-    Console.WriteLine("PASS actual packaged EXE starts WPF and bundled WebView2 using isolated offline data"); return;
+    Console.WriteLine($"PASS actual {kind} EXE starts WPF and bundled WebView2 using isolated offline data; update edition matches package"); return;
 }
 
 // Child processes only touch their isolated fixture folder, never MailTrim user data.

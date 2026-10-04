@@ -47,7 +47,8 @@ public static class UpdateInstaller
     {
         var window = new Window { Owner = owner, Title = "Обновление MailTrim", Width = 470, Height = 260, ResizeMode = ResizeMode.NoResize, WindowStartupLocation = WindowStartupLocation.CenterOwner };
         var panel = new StackPanel { Margin = new Thickness(20) };
-        var status = new TextBlock { Text = $"Версия {release.Tag}\nСкачать и установить обновление? Ящики и кэш сохранятся.", TextWrapping = TextWrapping.Wrap };
+        var edition = AppDistribution.Current == DistributionKind.Lite ? "облегчённый выпуск" : "выпуск со встроенным .NET";
+        var status = new TextBlock { Text = $"Версия {release.Tag} · {edition}\nСкачать и установить обновление? Ящики и кэш сохранятся.", TextWrapping = TextWrapping.Wrap };
         var progress = new ProgressBar { Height = 8, Margin = new Thickness(0, 16, 0, 16), Maximum = 100 };
         var install = new Button { Content = "Скачать и установить", Margin = new Thickness(0, 0, 0, 8) };
         var cancel = new Button { Content = "Отмена" };
@@ -65,7 +66,7 @@ public static class UpdateInstaller
                 Directory.CreateDirectory(directory);
                 using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
                 client.DefaultRequestHeaders.UserAgent.ParseAdd("MailTrim/" + typeof(App).Assembly.GetName().Version!.ToString(3));
-                var name = $"MailTrim-{release.Version.ToString(3)}-win-x64.zip";
+                var name = ReleasePackage.Name(release.Version, AppDistribution.Current);
                 var url = $"https://github.com/lineEdit/MailTrim/releases/download/{Uri.EscapeDataString(release.Tag)}/{name}";
                 status.Text = "Загрузка обновления…";
                 var hashFile = Path.Combine(directory, "checksum.txt");

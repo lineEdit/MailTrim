@@ -47,7 +47,7 @@ internal static class PackageLaunchProbe
             if (!await loaded.Task.WaitAsync(TimeSpan.FromSeconds(20))) throw new IOException("Fixture navigation failed");
             var text = await view.CoreWebView2.ExecuteScriptAsync("document.getElementById('package-check')?.textContent");
             if (JsonSerializer.Deserialize<string>(text) != "MailTrim") throw new IOException("Fixture not rendered");
-            File.WriteAllText(report, "PASS " + typeof(App).Assembly.GetName().Version + " WPF WebView2");
+            File.WriteAllText(report, "PASS " + typeof(App).Assembly.GetName().Version + " WPF WebView2 " + AppDistribution.Current);
             return 0;
         }
         catch (Exception ex) { File.WriteAllText(report, "FAIL " + ex.GetType().Name); return 1; }

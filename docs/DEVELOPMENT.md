@@ -55,14 +55,14 @@ dotnet run --project src/MailTrim.App -c Release --no-build
 
 ```powershell
 ./scripts/Publish.ps1
-./scripts/Publish.ps1 -OutputRoot C:\Temp\mailtrim-package-unique
+./scripts/Publish.ps1 -Edition Lite -OutputRoot C:\Temp\mailtrim-package-unique
 ```
 
-Создаются папка `MailTrim-<версия>-win-x64`, ZIP, файл SHA-256 и `release-notes.md`. Дистрибутив включает .NET, правила, документацию и уведомления о лицензиях; WebView2 Runtime устанавливается отдельно. Упаковка требует записи для текущей версии в `CHANGELOG.md` и не публикует релиз сама.
+По умолчанию создаются два выпуска: `MailTrim-<версия>-win-x64` со встроенным .NET и `MailTrim-<версия>-win-x64-lite` без .NET. Для каждого создаются папка, ZIP и SHA-256, а `release-notes.md` общий. Параметр `-Edition Standalone` или `-Edition Lite` собирает только выбранный выпуск. Lite требует .NET 10 Desktop Runtime x64; WebView2 Runtime устанавливается отдельно для обоих. Правила, документация и лицензии входят в оба архива. Упаковка требует записи для текущей версии в `CHANGELOG.md` и не публикует релиз сама.
 
 Используется [single-file deployment .NET](https://learn.microsoft.com/en-us/dotnet/core/deploying/single-file/overview) без trimming. Управляемые библиотеки включены в EXE; нативные компоненты извлекаются средой .NET в её временный каталог. Символы встроены через `DebugType=embedded`. Инструмент анализа `Microsoft.NET.ILLink.Tasks` закреплён как зависимость сборки, чтобы смена SDK не меняла lock-файл неявно.
 
-В корне пакета остаются `MailTrim.exe`, короткий `README.md`, `MailTrim.dll` и `MailTrim.runtimeconfig.json`. Последние два файла нужны старым версиям `UpdatePackage`, `UpdateInstaller` и `UpdateHandoff` для проверки состава и версии обновления. Рядом находятся `rules/`, `docs/` и `licenses/`; ссылки документации пересчитываются при упаковке. Лицензии .NET/WPF копируются из разрешённых runtime packs, лицензии WebView2 — из SDK.
+В корне пакета остаются `MailTrim.exe`, короткий `README.md`, `MailTrim.dll` и `MailTrim.runtimeconfig.json`. Последние два файла нужны старым версиям `UpdatePackage`, `UpdateInstaller` и `UpdateHandoff` для проверки состава и версии обновления. Рядом находятся `rules/`, `docs/` и `licenses/`; ссылки документации пересчитываются при упаковке. В обычном выпуске лицензии .NET/WPF копируются из разрешённых runtime packs; Lite не содержит этих библиотек. Лицензии WebView2 копируются из SDK для обоих выпусков. `AssemblyMetadata` с ключом `MailTrimDistribution` фиксирует тип сборки; установщик выбирает соответствующее имя ZIP через `ReleasePackage.Name`, без сохранения предпочтения в настройках пользователя.
 
 `OutputRoot` позволяет собрать пакет отдельно от уже используемого дистрибутива. Скрипт отказывается перезаписывать существующую папку или архив этой версии: для повторной упаковки выберите новый `OutputRoot`. По умолчанию используется `artifacts/`.
 
