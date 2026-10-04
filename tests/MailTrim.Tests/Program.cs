@@ -66,6 +66,53 @@ Check(ReleaseCatalog.Select("""{"tag_name":"v0.8.0","draft":false,"prerelease":f
 Check(ReleaseCatalog.Select("""[{"tag_name":"v0.8.0","draft":false,"prerelease":true}]""", false) is null, "no stable releases is an empty channel");
 Check(ReleaseCatalog.Select("""[{"tag_name":"v0.8.0","draft":false,"prerelease":true},{"tag_name":"v0.8.0","draft":false,"prerelease":false}]""", true)?.Prerelease == false, "stable release wins same-version tie");
 Check(ReleaseCatalog.Select("""[{"tag_name":"v3.0.0"},{"tag_name":"v5.0.0","draft":null,"prerelease":false}]""", true) is null, "malformed release records cannot become updates");
+var feedUri = new Uri("https://api.github.com/repos/example/test/releases");
+var retryHandler = new FeedHandler(call => call == 1 ? throw new HttpRequestException("connection interrupted") : new(System.Net.HttpStatusCode.OK) { Content = new StringContent(releases) });
+using (var client = new HttpClient(retryHandler)) Check((await UpdateCatalogClient.Fetch(client, feedUri, true))?.Tag == "v0.10.0" && retryHandler.Calls == 2 && retryHandler.Version == new Version(2,0), "feed retries connection interruption with protocol negotiation");
+var serverHandler = new FeedHandler(call => new(call == 1 ? System.Net.HttpStatusCode.ServiceUnavailable : System.Net.HttpStatusCode.OK) { Content = new StringContent(releases) });
+using (var client = new HttpClient(serverHandler)) Check((await UpdateCatalogClient.Fetch(client, feedUri, true))?.Tag == "v0.10.0" && serverHandler.Calls == 2, "feed retries transient server error");
+foreach (var (status, json, expected) in new[] {
+    (429, "{}", UpdateCheckError.RateLimit), (404, "{}", UpdateCheckError.NotFound), (403, "{}", UpdateCheckError.AccessDenied), (200, "not json", UpdateCheckError.InvalidResponse) })
+{
+    var handler = new FeedHandler(_ => new((System.Net.HttpStatusCode)status) { Content = new StringContent(json) });
+    using var client = new HttpClient(handler); bool correct = false;
+    try { await UpdateCatalogClient.Fetch(client, feedUri, true); } catch (UpdateCheckException ex) { correct = ex.Error == expected; }
+    Check(correct && handler.Calls == 1, "feed classifies error without retry storm: " + expected);
+}
+using (var client = new HttpClient(new FeedHandler(_ => throw new HttpRequestException("offline"))))
+{
+    bool correct = false; try { await UpdateCatalogClient.Fetch(client, feedUri, true); } catch (UpdateCheckException ex) { correct = ex.Error == UpdateCheckError.Network; }
+    Check(correct, "feed reports exhausted network retry");
+}
+using (var cancelledFeed = new CancellationTokenSource())
+using (var client = new HttpClient(new FeedHandler(_ => new(System.Net.HttpStatusCode.OK))))
+{
+    cancelledFeed.Cancel(); bool cancelledRequest = false;
+    try { await UpdateCatalogClient.Fetch(client, feedUri, true, cancelledFeed.Token); } catch (OperationCanceledException) { cancelledRequest = true; }
+    Check(cancelledRequest, "feed respects caller cancellation");
+}
+using (var client = new HttpClient(new FeedHandler(_ => throw new TaskCanceledException("timeout"))))
+{
+    bool correct = false; try { await UpdateCatalogClient.Fetch(client, feedUri, true); } catch (UpdateCheckException ex) { correct = ex.Error == UpdateCheckError.Timeout; }
+    Check(correct, "feed classifies exhausted timeout retry");
+}
+using (var client = new HttpClient(new FeedHandler(_ => { var response = new HttpResponseMessage(System.Net.HttpStatusCode.Forbidden); response.Headers.Add("X-RateLimit-Remaining", "0"); return response; })))
+{
+    bool correct = false; try { await UpdateCatalogClient.Fetch(client, feedUri, true); } catch (UpdateCheckException ex) { correct = ex.Error == UpdateCheckError.RateLimit; }
+    Check(correct, "feed recognizes GitHub exhausted quota");
+}
+using (var client = new HttpClient(new FeedHandler(_ => { var response = new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent("{}") }; response.Content.Headers.ContentLength = 4_000_001; return response; })))
+{
+    bool correct = false; try { await UpdateCatalogClient.Fetch(client, feedUri, true); } catch (UpdateCheckException ex) { correct = ex.Error == UpdateCheckError.ResponseTooLarge; }
+    Check(correct, "feed rejects oversized response before reading");
+}
+if (args.Contains("--verify-update-feed"))
+{
+    using var client = new HttpClient(); client.DefaultRequestHeaders.UserAgent.ParseAdd("MailTrim-test/0.12.1");
+    var latest = await UpdateCatalogClient.Fetch(client, new Uri("https://api.github.com/repos/lineEdit/MailTrim/releases?per_page=100"), true);
+    Check(latest is not null, "live GitHub feed parsed by application HTTP client");
+    Console.WriteLine("Latest published release: " + latest?.Tag);
+}
 var tracker = new NewMailTracker(); var profile = Guid.NewGuid();
 Check(tracker.Observe(profile, ["https://e.mail.ru/inbox/old"]) == 0, "mail notification first snapshot is quiet");
 Check(tracker.Observe(profile, ["https://e.mail.ru/inbox/new", "https://e.mail.ru/inbox/old"]) == 1, "new inbox head notifies once");
@@ -119,3 +166,13 @@ try
 }
 finally { Directory.Delete(updateScratch, true); }
 Console.WriteLine($"{passed} total checks passed.");
+
+sealed class FeedHandler(Func<int, HttpResponseMessage> response) : HttpMessageHandler
+{
+    public int Calls { get; private set; }
+    public Version? Version { get; private set; }
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested(); Version = request.Version; return Task.FromResult(response(++Calls));
+    }
+}
