@@ -59,6 +59,12 @@ internal static class Program
                 chronologyCache.SaveHeaders([headerOnly with { Date = "Today", ReceivedAt = null, CapturedAt = captured }]);
                 Check(chronologyCache.List()[0].ReceivedAt == headerOnly.ReceivedAt, "relative display date cannot replace an exact server date");
                 chronologyCache.Clear(); Check(chronologyCache.List().Count == 0, "clear cache removes both bodies and encrypted headers");
+                using (var cancelledHeaders = new CancellationTokenSource())
+                {
+                    cancelledHeaders.Cancel(); var headersStopped = false;
+                    try { chronologyCache.SaveHeaders([headerOnly], cancelledHeaders.Token); } catch (OperationCanceledException) { headersStopped = true; }
+                    Check(headersStopped && chronologyCache.List().Count == 0, "cancelled refresh cannot repopulate a cleared header cache");
+                }
                 var paused = false;
                 var a = new BrowserSession(store, window, _ => { }, () => paused, _ => { });
                 var b = new BrowserSession(store, window, _ => { }, () => paused, _ => { });
@@ -400,6 +406,18 @@ internal static class Program
                 closedRefreshPane.Close(); host.Children.Remove(closedRefreshPane);
                 await closedRefreshPane.BackgroundRefresh.WaitAsync(TimeSpan.FromSeconds(5));
                 Check(((DockPanel)closedRefreshPane.Children[0]).Children.OfType<ListBox>().Single().Items.Count == 0, "closing reader cancels automatic refresh without late UI changes");
+                refreshStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                var originalShown = false;
+                var originalRefreshPane = new ReaderPane(b, () => originalShown = true); host.Children.Add(originalRefreshPane); await originalRefreshPane.Start();
+                await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                var originalReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                void OriginalLoaded(object? sender, CoreWebView2DOMContentLoadedEventArgs e) { if (new Uri(b.View.CoreWebView2.Source).AbsolutePath == "/__mailtrim_reader") originalReady.TrySetResult(); }
+                b.View.CoreWebView2.DOMContentLoaded += OriginalLoaded;
+                await originalRefreshPane.OpenOriginal();
+                await originalReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                b.View.CoreWebView2.DOMContentLoaded -= OriginalLoaded;
+                Check(originalShown && (await b.View.CoreWebView2.ExecuteScriptAsync("document.body.textContent")).Contains("Safe text"), "switching to original drains cancelled refresh before visible navigation");
+                originalRefreshPane.Close(); host.Children.Remove(originalRefreshPane);
                 b.View.CoreWebView2.WebResourceRequested -= RefreshFixture;
                 a.Cache.Clear();
                 Console.WriteLine("Checking whole-mailbox scan with synthetic folders…");

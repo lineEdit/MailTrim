@@ -135,7 +135,7 @@ public partial class MainWindow : Window
     }
     private async void Reader_Click(object sender, RoutedEventArgs e)
     {
-        if (reader is not null) { reader.OpenOriginal(); return; }
+        if (reader is not null) { await Run(reader.OpenOriginal); return; }
         await OpenReader();
     }
     private async Task OpenReader()

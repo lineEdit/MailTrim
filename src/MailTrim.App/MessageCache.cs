@@ -46,10 +46,11 @@ public sealed class MessageCache
         }
         catch (Exception ex) when (ex is IOException or CryptographicException or JsonException or UnauthorizedAccessException) { return []; }
     }
-    public void SaveHeaders(IEnumerable<ReaderLetter> input)
+    public void SaveHeaders(IEnumerable<ReaderLetter> input, CancellationToken token = default)
     {
         lock (gate)
         {
+            token.ThrowIfCancellationRequested();
             var letters = ReadHeaders().GroupBy(x => x.Url).ToDictionary(x => x.Key, x => x.Last(), StringComparer.Ordinal);
             foreach (var raw in input)
                 if (ReaderData.Clean(raw) is { } letter)
@@ -63,6 +64,7 @@ public sealed class MessageCache
                 Directory.CreateDirectory(directory);
                 var path = Path.Combine(directory, "headers.index");
                 if (StoredBytesExcept(path) + encrypted.Length > 512_000_000) throw new IOException("cache_size_limit");
+                token.ThrowIfCancellationRequested();
                 File.WriteAllBytes(path + ".tmp", encrypted); File.Move(path + ".tmp", path, true);
             }
             finally { CryptographicOperations.ZeroMemory(bytes); }

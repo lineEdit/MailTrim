@@ -49,7 +49,7 @@ public sealed class ReaderDataService : IDisposable
                 var clean = rows.Select(ReaderData.Clean).OfType<ReaderLetter>().ToList();
                 foreach (var letter in clean) session.Cache.RefreshMetadata(letter);
                 ct.ThrowIfCancellationRequested();
-                try { await Task.Run(() => session.Cache.SaveHeaders(clean), ct); }
+                try { await Task.Run(() => session.Cache.SaveHeaders(clean, ct), ct); }
                 catch (Exception ex) when (ex is IOException or System.Security.Cryptography.CryptographicException or UnauthorizedAccessException) { /* Fresh rows remain usable if local storage is unavailable. */ }
                 return ReaderChronology.NewestFirst(clean);
             }
@@ -80,6 +80,7 @@ public sealed class ReaderDataService : IDisposable
         await source.Read(letter, ct); ct.ThrowIfCancellationRequested();
         return await source.Extract<string>(ReaderActionScript.Create(action, letter.Url));
     }, token);
+    public Task WaitForIdle(CancellationToken token) => Enqueue(_ => Task.FromResult(true), token);
     public Task<ReaderSource.BatchResult> CacheMailbox(Action<string> progress, Action<ReaderLetter> discovered, CancellationToken token) =>
         Enqueue(ct => source.CacheMailbox(progress, discovered, ct), token);
     public void Dispose() { lifetime.Cancel(); requests.Writer.TryComplete(); }

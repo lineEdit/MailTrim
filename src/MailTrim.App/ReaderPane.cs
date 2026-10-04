@@ -25,6 +25,7 @@ public sealed class ReaderPane : Grid
     private CancellationTokenSource? messageRead;
     private CancellationTokenSource? listRefresh;
     private bool entryRefreshNeeded = true;
+    private bool openingOriginal;
     public Task BackgroundRefresh { get; private set; } = Task.CompletedTask;
     private readonly TextBox searchBox = new() { MaxLength = 256, ToolTip = "Поиск в кэше: отправитель, тема и текст. Enter — найти.", MinWidth = 160 };
     private int scrollOffset;
@@ -88,13 +89,23 @@ public sealed class ReaderPane : Grid
         catch { notice.Text = "Не удалось открыть ответ. Проверьте вход в Mail.ru и повторите попытку."; }
         finally { loading = false; list.IsEnabled = true; }
     }
-    public void OpenOriginal()
+    public async Task OpenOriginal()
     {
-        listRefresh?.Cancel();
-        batch?.Cancel();
-        if (!session.ReaderReplyOpen && selectedLetter is { } letter && session.View.CoreWebView2.Source != letter.Url)
-            session.View.CoreWebView2.Navigate(letter.Url);
-        original();
+        if (openingOriginal || lifetime.IsCancellationRequested) return;
+        openingOriginal = true; entryRefreshNeeded = false;
+        listRefresh?.Cancel(); messageRead?.Cancel(); batch?.Cancel();
+        try
+        {
+            // Cancelled navigation must stop before the visible original starts navigating.
+            await session.ReaderData.WaitForIdle(lifetime.Token);
+            lifetime.Token.ThrowIfCancellationRequested();
+            if (!session.ReaderReplyOpen && selectedLetter is { } letter && session.View.CoreWebView2.Source != letter.Url)
+                session.View.CoreWebView2.Navigate(letter.Url);
+            original();
+        }
+        catch (OperationCanceledException) { }
+        catch { if (!lifetime.IsCancellationRequested) notice.Text = "Не удалось открыть оригинал. Повторите попытку."; }
+        finally { openingOriginal = false; }
     }
     public ReaderPane(BrowserSession session, Action original)
     {
@@ -159,7 +170,7 @@ public sealed class ReaderPane : Grid
             button.Click += async (_, _) => await PerformAction(action);
         }
         var open = new Button { Content = "Оригинал / вложения ↗", Padding = new Thickness(8,4,8,4) };
-        messageActions.Children.Add(open); open.Click += (_, _) => { if (!loading) OpenOriginal(); };
+        messageActions.Children.Add(open); open.Click += async (_, _) => { if (!loading) await OpenOriginal(); };
         right.Children.Add(new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
         AddText("Выберите письмо слева. Ответы, ссылки и вложения доступны в оригинале.");
         var splitter = new GridSplitter { Width = 5, HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch,
