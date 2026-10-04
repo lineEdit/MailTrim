@@ -36,6 +36,15 @@ public sealed class DesktopIntegration : IDisposable
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add("Открыть MailTrim", null, (_, _) => Restore());
         menu.Items.Add("Проверить почту сейчас", null, (_, _) => CheckRequested?.Invoke());
+        var update = new Forms.ToolStripMenuItem("Проверить обновления");
+        update.Click += async (_, _) =>
+        {
+            if (!update.Enabled) return;
+            update.Enabled = false;
+            try { Restore(); await UpdateChecker.Check(window, store, false); }
+            finally { if (!update.IsDisposed) update.Enabled = true; }
+        };
+        menu.Items.Add(update);
         var quiet = new Forms.ToolStripMenuItem("Уведомления") { Checked = store.Settings.NotifyNewMail, CheckOnClick = true };
         quiet.CheckedChanged += (_, _) => { store.Settings.NotifyNewMail = quiet.Checked; store.Save(); };
         menu.Opening += (_, _) => quiet.Checked = store.Settings.NotifyNewMail;
