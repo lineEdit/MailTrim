@@ -6,6 +6,9 @@ public static class ReaderScript
     public const string List = """
     (() => {
       if(location.origin!=='https://e.mail.ru') return [];
+      const now=new Date(), offset=-now.getTimezoneOffset();
+      const captured=new Date(now.getTime()+offset*60000).toISOString().slice(0,-1)
+        +(offset>=0?'+':'-')+String(Math.floor(Math.abs(offset)/60)).padStart(2,'0')+':'+String(Math.abs(offset)%60).padStart(2,'0');
       return [...document.querySelectorAll('a.js-letter-list-item')].slice(0,100).map(row=>{
         const atoms=[...row.querySelectorAll('*')].filter(e=>!e.closest('button,svg,aside') && e.getBoundingClientRect().height>0)
           .map(e=>({e,t:[...e.childNodes].filter(n=>n.nodeType===3).map(n=>n.textContent).join('').trim()})).filter(x=>x.t);
@@ -21,7 +24,7 @@ public static class ReaderScript
         let hint='';
         for(let e=last,n=0;e && e!==row && n<4;e=e.parentElement,n++) { if(e.getAttribute('title')) { hint=e.getAttribute('title').slice(0,150); break; } }
         return {url:row.href,sender:atoms[0]?.t||'',subject:atoms[1]?.t||'(без темы)',
-          preview:atoms.slice(2,-1).map(x=>x.t).join(' ').slice(0,300),date:atoms.at(-1)?.t||'',receivedAt:received,capturedAt:new Date().toISOString(),dateHint:hint};
+          preview:atoms.slice(2,-1).map(x=>x.t).join(' ').slice(0,300),date:atoms.at(-1)?.t||'',receivedAt:received,capturedAt:captured,dateHint:hint};
       }).filter(x=>new URL(x.url).origin===location.origin);
     })()
     """;

@@ -17,6 +17,7 @@ Check(ReaderChronology.DateKey(Dated("relative", "вчера 23:40", observed)) 
 Check(ReaderChronology.DateKey(Dated("year", "31 дек", observed))?.Year == 2025, "short dates handle previous year");
 Check(ReaderChronology.DateKey(Dated("bad", "99:99", observed)) is null, "invalid date is unknown rather than invented");
 Check(ReaderChronology.DateKey(Dated("hint", "0:20", observed) with { DateHint = "30.09.2026 19:59" })?.Day == 30, "full official tooltip date wins over abbreviated display");
+Check(ReaderChronology.DateKey(Dated("other-zone", "0:10", new DateTimeOffset(2026,1,1,0,20,0,TimeSpan.FromHours(14)))) == new DateTimeOffset(2026,1,1,0,10,0,TimeSpan.FromHours(14)), "capture time zone is preserved across a different local day");
 var clean = ReaderData.Clean(new[] { new ReaderBlock("hello", "javascript:alert(1)"), new ReaderBlock("data", "data:image/png;base64,a"), new ReaderBlock("credentials", "https://user:pass@example.org/a"), new ReaderBlock("image", "https://example.org/a.png") });
 Check(clean.Take(3).All(b => b.Image == "") && clean[3].Image.EndsWith("a.png"), "clean data rejects executable and credentialed image references");
 Check(ReaderData.Clean(Enumerable.Repeat(new ReaderBlock(new string('a', 30_000), ""), 1000)).Sum(b => b.Text.Length + b.Image.Length) <= 500_000, "clean message data is bounded");

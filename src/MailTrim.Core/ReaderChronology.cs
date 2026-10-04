@@ -9,7 +9,7 @@ public static class ReaderChronology
     public static DateTimeOffset? DateKey(ReaderLetter letter)
     {
         if (letter.ReceivedAt is { } exact) return exact;
-        var anchor = letter.CapturedAt?.ToLocalTime();
+        var anchor = letter.CapturedAt;
         foreach (var label in new[] { letter.DateHint, letter.Date })
         {
             if (string.IsNullOrWhiteSpace(label)) continue;
