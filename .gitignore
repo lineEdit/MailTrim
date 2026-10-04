@@ -10,4 +10,8 @@ artifacts/
 *.p12
 **/UserData/
 **/Profiles/
+**/ReaderCache/
+**/*.WebView2/
+/settings.json
+/rules.json
 .env*

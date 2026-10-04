@@ -1,0 +1,20 @@
+name: Предложение
+description: Предложить улучшение MailTrim
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Какую задачу сейчас неудобно выполнять?
+      description: Опишите сценарий без писем, адресов и персональных данных.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Как вы хотели бы это делать?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Какие варианты уже пробовали?

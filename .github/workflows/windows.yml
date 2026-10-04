@@ -19,6 +19,15 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Validate release tag
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            [xml]$props = Get-Content Directory.Build.props
+            if ($env:GITHUB_REF_NAME -ne "v$($props.Project.PropertyGroup.Version)") {
+              throw 'Release tag must match Directory.Build.props Version.'
+            }
+          }
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
@@ -28,19 +37,16 @@ jobs:
         run: dotnet restore MailTrim.sln --locked-mode
       - name: Build Release
         run: dotnet build MailTrim.sln -c Release --no-restore
-      - name: Core checks
-        run: dotnet run --project tests/MailTrim.Tests -c Release --no-build
-      - name: Update restart and rollback checks
-        run: dotnet run --project tests/MailTrim.UpdateTests -c Release --no-build -- "${{ runner.temp }}/mailtrim-update-tests"
-      - name: WebView2 integration checks
-        run: dotnet run --project tests/MailTrim.Smoke -c Release --no-build -- "${{ runner.temp }}/mailtrim-smoke"
+      - name: Application checks (core, updates, WebView2)
+        run: ./scripts/Check.ps1 -NoBuild -ScratchRoot "$env:RUNNER_TEMP/mailtrim-checks"
       - name: Package standalone Windows application
         run: ./scripts/Publish.ps1
       - name: Verify actual release package
         shell: pwsh
         run: |
-          $archive = Get-ChildItem artifacts/*.zip | Select-Object -First 1
-          dotnet run --project tests/MailTrim.UpdateTests -c Release --no-build -- --verify-package $archive.FullName "$env:RUNNER_TEMP/mailtrim-package-check"
+          [xml]$props = Get-Content Directory.Build.props
+          $archive = "artifacts/MailTrim-$($props.Project.PropertyGroup.Version)-win-x64.zip"
+          dotnet run --project tests/MailTrim.UpdateTests -c Release --no-build -- --verify-package $archive "$env:RUNNER_TEMP/mailtrim-package-check"
       - name: Upload ZIP and SHA-256
         id: package
         uses: actions/upload-artifact@v4
@@ -51,6 +57,7 @@ jobs:
           path: |
             artifacts/*.zip
             artifacts/*.sha256
+            artifacts/release-notes.md
       - name: Download link
         shell: pwsh
         env:
@@ -58,7 +65,7 @@ jobs:
         run: |
           "## MailTrim — Windows x64" >> $env:GITHUB_STEP_SUMMARY
           "[Download ZIP and SHA-256]($env:ARTIFACT_URL)" >> $env:GITHUB_STEP_SUMMARY
-          "Build and both test suites passed. Extract the application ZIP completely and run MailTrim.exe." >> $env:GITHUB_STEP_SUMMARY
+          "Build, application checks and package verification passed. Extract the application ZIP completely and run MailTrim.exe." >> $env:GITHUB_STEP_SUMMARY
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
@@ -76,4 +83,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
-        run: gh release create "$RELEASE_TAG" artifacts/*.zip artifacts/*.sha256 rules/default.json --draft --prerelease --title "MailTrim $RELEASE_TAG" --notes-file CHANGELOG.md
+        run: gh release create "$RELEASE_TAG" artifacts/*.zip artifacts/*.sha256 rules/default.json --draft --prerelease --title "MailTrim $RELEASE_TAG" --notes-file artifacts/release-notes.md

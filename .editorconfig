@@ -8,3 +8,5 @@ indent_style = space
 indent_size = 4
 [*.{yml,yaml,json}]
 indent_size = 2
+[*.{csproj,props,targets,xaml,manifest,config}]
+indent_size = 2
