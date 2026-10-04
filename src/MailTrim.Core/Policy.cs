@@ -193,6 +193,27 @@ public static class CosmeticScript
               if (card) hide(card);
             }
           };
+          const dismissStorePromo = () => {
+            for (const heading of document.querySelectorAll('h1,h2,h3,div,span')) {
+              if (heading.closest(protectedContent) || heading.children.length > 2) continue;
+              const title = (heading.textContent || '').replace(/\s+/g, ' ').trim();
+              if (!/^Актуальная версия Почты в RuStore$/iu.test(title)) continue;
+              for (let panel = heading.parentElement, depth = 0; panel && depth < 6; panel = panel.parentElement, depth++) {
+                if (panel.matches('body,main,#app-canvas,[role="main"]') || panel.querySelector(protectedContent)) break;
+                const text = (panel.textContent || '').replace(/\s+/g, ' ');
+                const r = panel.getBoundingClientRect();
+                if (text.length > 1500 || r.width > 650 || r.height > 850) break;
+                if (!/Установите или обновите приложение/iu.test(text) || !/Android/iu.test(text) || r.width < 200 || r.height < 150) continue;
+                const close = [...panel.querySelectorAll('button,[role="button"]')].filter(button => {
+                  const label = (button.getAttribute('aria-label') || button.getAttribute('title') || button.textContent || '').trim();
+                  const b = button.getBoundingClientRect();
+                  const corner = b.width > 0 && b.width <= 48 && b.height <= 48 && b.top < r.top + 70 && b.right > r.right - 70;
+                  return corner && (/^(?:закрыть|close|×|✕|x)$/iu.test(label) || (!label && button.querySelector('svg')));
+                });
+                if (close.length === 1) { close[0].click(); break; }
+              }
+            }
+          };
           const apply = () => {
             if (!document.documentElement) return;
             let style = document.getElementById(id);
@@ -208,7 +229,7 @@ public static class CosmeticScript
             // Virtualized rows may be reused for real messages: undo our markers before reevaluating.
             for (const node of marked) node.removeAttribute('data-mailtrim-ad');
             marked.clear();
-            if (labeledAds) hideLabeledAds();
+            if (labeledAds) { hideLabeledAds(); dismissStorePromo(); }
             fitMailArea();
           };
           const schedule = () => { if (!timer) timer = setTimeout(scan, 100); };

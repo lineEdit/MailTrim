@@ -15,6 +15,29 @@ public partial class MainWindow : Window
     private bool readerMode;
     private DesktopIntegration? desktop;
     private MailMonitor? monitor;
+    private readonly System.Windows.Threading.DispatcherTimer visibleStatusTimer = new() { Interval = TimeSpan.FromSeconds(3) };
+    private readonly Dictionary<Guid, DateTimeOffset> visibleStatusTimes = [];
+    private bool readingVisibleStatus;
+    public async Task RefreshVisibleMailboxStatus()
+    {
+        if (busy || readingVisibleStatus || Current is not { } session || session.View.CoreWebView2 is null || Profiles.SelectedItem is not AccountProfile profile) return;
+        readingVisibleStatus = true;
+        try
+        {
+            var json = await session.View.CoreWebView2.ExecuteScriptAsync(MailboxStatusScript.Snapshot);
+            var snapshot = System.Text.Json.JsonSerializer.Deserialize<MailboxStatusScript.SnapshotResult>(json, FilterRules.Json);
+            if (snapshot is { Ready: true, Unread: >= 0 } && ReferenceEquals(Current, session))
+            {
+                var now = DateTimeOffset.Now;
+                visibleStatusTimes[profile.Id] = now;
+                profile.SetStatus(new MailboxStatus("Проверено", snapshot.Unread, now));
+                ConnectionStatus.Text = profile.StatusText;
+                desktop?.UpdateCounts(store.Settings.Profiles);
+            }
+        }
+        catch (Exception) { /* A navigating or disposed view has no reliable snapshot. */ }
+        finally { readingVisibleStatus = false; }
+    }
     public void RestoreWindow() { if (desktop is not null) desktop.Restore(); else { Show(); Activate(); } }
     private bool paused;
     private bool busy;
@@ -46,7 +69,7 @@ public partial class MainWindow : Window
             if (store.RulesUpgradeAvailable) MessageBox.Show(this, "Доступны новые фильтры рекламы. Ваш изменённый набор сохранён. Чтобы использовать новый набор: Настройки → Правила → Встроенные правила → Сохранить и перезагрузить. Это заменит ваши изменения правил.", "Обновление фильтров");
             if (store.Settings.CheckUpdatesOnStartup) await UpdateChecker.Check(this, store, true);
         };
-        Closed += (_, _) => { monitor?.Dispose(); desktop?.Dispose(); desktop = null; CloseReader(); foreach (var session in sessions.Values) session.Dispose(); store.Log("app_closed"); };
+        Closed += (_, _) => { visibleStatusTimer.Stop(); monitor?.Dispose(); desktop?.Dispose(); desktop = null; CloseReader(); foreach (var session in sessions.Values) session.Dispose(); store.Log("app_closed"); };
         Closing += (_, e) =>
         {
             if (confirmedShutdown || desktop?.SystemEnding == true) return;
@@ -80,12 +103,16 @@ public partial class MainWindow : Window
             monitor = new MailMonitor(store, backgroundHost, count => desktop.Notify(count), () => !busy, UpdateMailboxStatus); monitor.Start();
             desktop.CheckRequested += monitor.RequestCheck;
             desktop.UpdateCounts(store.Settings.Profiles);
+            visibleStatusTimer.Tick += async (_, _) => await RefreshVisibleMailboxStatus();
+            visibleStatusTimer.Start();
         }
         store.Log("app_started");
     }
 
     private void UpdateMailboxStatus(Guid id, MailboxStatus status)
     {
+        if (Current is not null && Profiles.SelectedItem is AccountProfile active && active.Id == id
+            && visibleStatusTimes.TryGetValue(id, out var fresh) && DateTimeOffset.Now - fresh < TimeSpan.FromSeconds(15)) return;
         store.Settings.Profiles.FirstOrDefault(p => p.Id == id)?.SetStatus(status);
         if (Profiles.SelectedItem is AccountProfile selected) ConnectionStatus.Text = selected.StatusText;
         desktop?.UpdateCounts(store.Settings.Profiles);

@@ -18,7 +18,7 @@ public static class MailboxStatusScript
       const label=inbox.getAttribute('aria-label')||inbox.getAttribute('title')||'';
       const labeled=label.match(/(\d+)\s*непрочитан/i)||label.match(/непрочитан[^\d]*?(\d+)/i);
       if(labeled)return {ready:true,unread:Number(labeled[1])};
-      const leaves=[...inbox.querySelectorAll('span,div')].filter(e=>e.children.length===0).map(e=>e.textContent.trim());
+      const leaves=[...inbox.querySelectorAll('span,div,sup,b,i,strong,text')].filter(e=>e.children.length===0).map(e=>e.textContent.trim());
       const numbers=leaves.filter(t=>/^\d+$/.test(t));
       return {ready:true,unread:numbers.length===1?Number(numbers[0]):null};
     })()

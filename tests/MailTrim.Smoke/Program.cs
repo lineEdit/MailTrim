@@ -60,6 +60,15 @@ internal static class Program
                 await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('dynamic').innerHTML = '<div id=late-ad role=listitem class=card><span>Реклама 6+</span><a href=https://r.mail.ru/test>Late ad</a></div>'");
                 await WaitForScript(a, "document.getElementById('late-ad').getBoundingClientRect().height === 0");
                 Check(true, "late SPA ad hidden");
+                await a.View.CoreWebView2.ExecuteScriptAsync("""
+                    document.body.insertAdjacentHTML('beforeend', `<div id="store-overlay" style="position:fixed;inset:0;background:#8888"><div style="position:absolute;left:100px;top:50px;width:420px;height:500px;background:white">
+                    <button aria-label="Закрыть" style="position:absolute;right:8px;top:8px;width:32px;height:32px" onclick="document.getElementById('store-overlay').remove()">×</button>
+                    <h2>Актуальная версия Почты в RuStore</h2><p>Установите или обновите приложение Mail на Android через RuStore</p><button>Узнать больше</button></div></div>`);
+                    document.getElementById('letter-body').insertAdjacentHTML('beforeend', '<h2>Актуальная версия Почты в RuStore</h2><p>Установите или обновите приложение Mail на Android через RuStore</p><button id="body-close" aria-label="Закрыть" onclick="window.bodyClicked=true">×</button>');
+                    """);
+                await WaitForScript(a, "!document.getElementById('store-overlay')");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("!window.bodyClicked && !!document.getElementById('body-close')") == "true", "store promo dismissed with backdrop; message buttons untouched");
+
                 await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('late-ad').innerHTML = '<a href=/inbox/789><span>Реклама 6+</span>Real message replacing virtualized ad</a>'");
                 await WaitForScript(a, "document.getElementById('late-ad').getBoundingClientRect().height > 0");
                 Check(true, "virtualized ad reused as message is restored");
@@ -182,6 +191,10 @@ internal static class Program
                 await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('unread-test').removeAttribute('data-unread-count')");
                 unreadSnapshot = System.Text.Json.JsonSerializer.Deserialize<MailboxStatusScript.SnapshotResult>(await a.View.CoreWebView2.ExecuteScriptAsync(MailboxStatusScript.Snapshot), FilterRules.Json)!;
                 Check(unreadSnapshot.Ready && unreadSnapshot.Unread is null, "missing unread counter is unknown rather than zero");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('unread-test').innerHTML='Входящие<sup>3</sup>'");
+                unreadSnapshot = System.Text.Json.JsonSerializer.Deserialize<MailboxStatusScript.SnapshotResult>(await a.View.CoreWebView2.ExecuteScriptAsync(MailboxStatusScript.Snapshot), FilterRules.Json)!;
+                Check(unreadSnapshot.Unread == 3, "compact inbox badge parsed");
+
                 await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('unread-test').setAttribute('data-unread-count','0')");
                 unreadSnapshot = System.Text.Json.JsonSerializer.Deserialize<MailboxStatusScript.SnapshotResult>(await a.View.CoreWebView2.ExecuteScriptAsync(MailboxStatusScript.Snapshot), FilterRules.Json)!;
                 Check(unreadSnapshot.Unread == 0, "explicit zero unread count is retained");                var originalRequests = 0; var pane = new ReaderPane(a, () => originalRequests++); host.Children.Add(pane); a.View.Visibility = Visibility.Hidden; b.View.Visibility = Visibility.Hidden;
@@ -305,6 +318,13 @@ internal static class Program
                 for (int i = 0; i < 100 && !firstList.IsEnabled; i++) await Task.Delay(50);
                 await firstPane.PerformAction(ReaderAction.Reply);
                 Check(firstPane.IsReplyVisible, "account reply opens inside production shell");
+                await firstView.CoreWebView2.ExecuteScriptAsync("document.body.insertAdjacentHTML('beforeend','<a id=live-count href=/inbox/ data-unread-count=3>Входящие</a>')");
+                await shell.RefreshVisibleMailboxStatus();
+                Check(store.Settings.Profiles[0].Status.Unread == 3, "active web counter updates account badge without navigation");
+                await firstView.CoreWebView2.ExecuteScriptAsync("document.getElementById('live-count').setAttribute('data-unread-count','2')");
+                await shell.RefreshVisibleMailboxStatus();
+                Check(store.Settings.Profiles[0].Status.Unread == 2, "changed active web counter refreshes immediately");
+
                 profiles.SelectedIndex = 1;
                 for (int i = 0; i < 100 && !shell.IsEnabled; i++) await Task.Delay(50);
                 Check(!((ReaderPane)readerHost.Children[0]).IsReplyVisible, "reply is not shown in another account");
@@ -438,7 +458,3 @@ internal static class Program
         Console.WriteLine("PASS " + name);
     }
 }
-
-
-
-
