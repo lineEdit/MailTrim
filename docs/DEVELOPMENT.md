@@ -14,6 +14,7 @@ src/
     Desktop/           Трей, автозапуск и положение окна
     Storage/           Настройки, правила и журнал
     Updates/           Проверка и установка обновления
+    Diagnostics/       Изолированная проверка запуска дистрибутива
   MailTrim.Core/       Логика без WPF и зависимости от WebView2
     Filtering/         Сетевые правила, навигация и косметическая очистка
     Reader/            Парсер, нормализация, даты и действия в письме
@@ -58,6 +59,10 @@ dotnet run --project src/MailTrim.App -c Release --no-build
 ```
 
 Создаются папка `MailTrim-<версия>-win-x64`, ZIP, файл SHA-256 и `release-notes.md`. Дистрибутив включает .NET, правила, документацию и уведомления о лицензиях; WebView2 Runtime устанавливается отдельно. Упаковка требует записи для текущей версии в `CHANGELOG.md` и не публикует релиз сама.
+
+Используется [single-file deployment .NET](https://learn.microsoft.com/en-us/dotnet/core/deploying/single-file/overview) без trimming. Управляемые библиотеки включены в EXE; нативные компоненты извлекаются средой .NET в её временный каталог. Символы встроены через `DebugType=embedded`. Инструмент анализа `Microsoft.NET.ILLink.Tasks` закреплён как зависимость сборки, чтобы смена SDK не меняла lock-файл неявно.
+
+В корне пакета остаются `MailTrim.exe`, короткий `README.md`, `MailTrim.dll` и `MailTrim.runtimeconfig.json`. Последние два файла нужны старым версиям `UpdatePackage`, `UpdateInstaller` и `UpdateHandoff` для проверки состава и версии обновления. Рядом находятся `rules/`, `docs/` и `licenses/`; ссылки документации пересчитываются при упаковке. Лицензии .NET/WPF копируются из разрешённых runtime packs, лицензии WebView2 — из SDK.
 
 `OutputRoot` позволяет собрать пакет отдельно от уже используемого дистрибутива. Скрипт отказывается перезаписывать существующую папку или архив этой версии: для повторной упаковки выберите новый `OutputRoot`. По умолчанию используется `artifacts/`.
 

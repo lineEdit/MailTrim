@@ -10,18 +10,31 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
   <ItemGroup>
     <Using Remove="System.Windows.Forms" />
     <Using Remove="System.Drawing" />
     <ProjectReference Include="../MailTrim.Core/MailTrim.Core.csproj" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" GeneratePathProperty="true" />
+    <!-- Pin the SDK's single-file analyzer so newer SDK patches preserve locked restore. -->
+    <PackageReference Include="Microsoft.NET.ILLink.Tasks" Version="10.0.12" PrivateAssets="all" />
     <Content Include="../../rules/default.json" Link="rules/default.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="../../rules/legacy-0.1.0.json" Link="rules/legacy-0.1.0.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="../../rules/legacy-0.1.1.json" Link="rules/legacy-0.1.1.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <Target Name="CopyWebView2Notices" AfterTargets="Publish">
-    <Copy SourceFiles="$(PkgMicrosoft_Web_WebView2)/LICENSE.txt" DestinationFiles="$(PublishDir)WebView2-LICENSE.txt" />
-    <Copy SourceFiles="$(PkgMicrosoft_Web_WebView2)/NOTICE.txt" DestinationFiles="$(PublishDir)WebView2-NOTICE.txt" />
+    <Copy SourceFiles="$(PkgMicrosoft_Web_WebView2)/LICENSE.txt" DestinationFiles="$(PublishDir)licenses/WebView2/LICENSE.txt" />
+    <Copy SourceFiles="$(PkgMicrosoft_Web_WebView2)/NOTICE.txt" DestinationFiles="$(PublishDir)licenses/WebView2/NOTICE.txt" />
+  </Target>
+  <Target Name="CopyLegacyUpdateMetadata" AfterTargets="Publish" Condition="'$(PublishSingleFile)' == 'true'">
+    <!-- Older updaters validate these two files before launching the bundled EXE. -->
+    <Copy SourceFiles="$(TargetPath);$(TargetDir)$(AssemblyName).runtimeconfig.json" DestinationFolder="$(PublishDir)" />
+  </Target>
+  <Target Name="ExcludeWebViewSdkXmlFromPublish" AfterTargets="ComputeFilesToPublish">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="'%(ResolvedFileToPublish.RelativePath)' == 'Microsoft.Web.WebView2.Core.xml' Or '%(ResolvedFileToPublish.RelativePath)' == 'Microsoft.Web.WebView2.WinForms.xml' Or '%(ResolvedFileToPublish.RelativePath)' == 'Microsoft.Web.WebView2.Wpf.xml'" />
+    </ItemGroup>
   </Target>
 </Project>

@@ -13,7 +13,7 @@
 3. Проверьте настоящий пакет тестом установки, подставив текущую версию и новую тестовую папку:
 
 ```powershell
-dotnet run --project tests/MailTrim.UpdateTests -c Release --no-build -- --verify-package artifacts/MailTrim-0.12.6-win-x64.zip C:\Temp\mailtrim-package-check-unique
+dotnet run --project tests/MailTrim.UpdateTests -c Release --no-build -- --verify-package artifacts/MailTrim-0.12.8-win-x64.zip C:\Temp\mailtrim-package-check-unique
 ```
 
 4. Зафиксируйте изменения и отправьте их в репозиторий. Убедитесь, что Windows pipeline зелёный, затем создайте и отправьте тег версии.
@@ -23,6 +23,8 @@ dotnet run --project tests/MailTrim.UpdateTests -c Release --no-build -- --verif
 ## Что делает GitHub Actions
 
 [Windows pipeline](https://github.com/lineEdit/MailTrim/blob/main/.github/workflows/windows.yml) запускается на push, pull request и вручную. Он восстанавливает зависимости в locked mode, собирает Release, запускает три набора через `Check.ps1`, упаковывает Windows x64 и проверяет настоящий ZIP тестом установки.
+
+Проверка пакета также запускает включённый в архив EXE с отдельным профилем и локальной HTML-страницей. Она подтверждает работу WPF-ресурсов и загрузчика WebView2 в сборке single-file, сохраняя изоляцию от личных ящиков.
 
 Артефакт сборки содержит ZIP, SHA-256 и заметки текущей версии; срок хранения — 30 дней. Ссылка отображается в сводке запуска. Сборки веток не создают GitHub Release и не доступны механизму обновлений как релизы.
 

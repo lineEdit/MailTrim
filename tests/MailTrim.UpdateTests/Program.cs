@@ -9,7 +9,16 @@ if (args.Length == 3 && args[0] == "--verify-package")
     UpdatePackage.Extract(args[1], checksum, args[2], default);
     if (AssemblyName.GetAssemblyName(Path.Combine(args[2], "MailTrim.dll")).Version != Assembly.GetExecutingAssembly().GetName().Version)
         throw new InvalidDataException("Published package version mismatch");
-    Console.WriteLine("PASS actual published ZIP checksum, extraction and version"); return;
+    Console.WriteLine("PASS actual published ZIP checksum, extraction and version");
+    var packageRoot = Path.GetFullPath(args[2]);
+    var probeRoot = Path.Combine(packageRoot, "launch-verification");
+    using var application = UpdateHandoff.Start(Path.Combine(packageRoot, "MailTrim.exe"), "--verify-package-launch", probeRoot);
+    try { await application.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(90)); }
+    catch (TimeoutException) { application.Kill(); await application.WaitForExitAsync(); throw; }
+    var expectedReport = "PASS " + Assembly.GetExecutingAssembly().GetName().Version + " WPF WebView2";
+    if (application.ExitCode != 0 || File.ReadAllText(Path.Combine(probeRoot, "package-launch.txt")) != expectedReport)
+        throw new InvalidDataException("Published application launch failed");
+    Console.WriteLine("PASS actual packaged EXE starts WPF and bundled WebView2 using isolated offline data"); return;
 }
 
 // Child processes only touch their isolated fixture folder, never MailTrim user data.

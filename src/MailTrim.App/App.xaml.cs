@@ -10,6 +10,11 @@ public partial class App : Application
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        if (e.Args.Length == 2 && e.Args[0] == "--verify-package-launch")
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            Shutdown(await PackageLaunchProbe.Run(e.Args[1])); return;
+        }
         if (e.Args.Length == 2 && e.Args[0] == "--apply-update")
         {
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
