@@ -9,6 +9,11 @@ foreach (var url in new[] { "https://e.mail.ru.evil.test/", "https://evilmail.ru
 Check(!NavigationPolicy.IsExternal("file:///C:/Windows"), "no shell file launch");
 Check(!NavigationPolicy.IsExternal("ms-settings:privacy"), "no arbitrary protocols");
 Check(!NavigationPolicy.IsExternal("https://user:pass@example.org"), "no URL credentials");
+var clean = ReaderData.Clean(new[] { new ReaderBlock("hello", "javascript:alert(1)"), new ReaderBlock("data", "data:image/png;base64,a"), new ReaderBlock("credentials", "https://user:pass@example.org/a"), new ReaderBlock("image", "https://example.org/a.png") });
+Check(clean.Take(3).All(b => b.Image == "") && clean[3].Image.EndsWith("a.png"), "clean data rejects executable and credentialed image references");
+Check(ReaderData.Clean(Enumerable.Repeat(new ReaderBlock(new string('a', 30_000), ""), 1000)).Sum(b => b.Text.Length + b.Image.Length) <= 500_000, "clean message data is bounded");
+Check(ReaderData.Clean(new ReaderLetter("https://evil.test/mail", "s", "t", "p", "d")) is null, "clean data rejects external message URLs");
+Check(ReaderData.Clean(new ReaderLetter("https://e.mail.ru/inbox/1", new string('s', 1000), "subject", "preview", "today"))?.Sender.Length == 500, "clean metadata is bounded");
 var rules = FilterRules.Parse("""{"blockedDomains":["ads.example.com","mail.ru"],"allowedDomains":["safe.ads.example.com"]} """);
 Check(rules.ShouldBlock("https://a.ads.example.com/x", true), "subdomain blocked");
 Check(!rules.ShouldBlock("https://notads.example.com/x", true), "domain boundary");

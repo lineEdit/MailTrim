@@ -49,9 +49,15 @@ public partial class MainWindow : Window
         var count = allProfiles ? sessions.Values.Count(s => s.ReaderReplyOpen) : Current?.ReaderReplyOpen == true ? 1 : 0;
         return count == 0 || confirmReplyExit($"Открыта панель ответа (ящиков: {count}). Приложение не проверяет, сохранён ли черновик в Mail.ru.\n\nСначала отправьте письмо или сохраните черновик. Продолжить и покинуть страницу?");
     }
-    private void NavigateFromReader(Action<BrowserSession> navigate)
+    private void NavigateFromReader(Action<BrowserSession> navigate, bool refreshReader = false)
     {
-        if (busy || Current is not { } current || !ConfirmReplyExit()) return;
+        if (busy || Current is not { } current) return;
+        if (reader is { IsReplyVisible: false } native)
+        {
+            _ = Run(() => refreshReader ? native.RefreshList() : native.PreviousLetter());
+            return;
+        }
+        if (!ConfirmReplyExit()) return;
         CloseReader(); current.ReaderReplyOpen = false;
         navigate(current);
     }
@@ -90,8 +96,8 @@ public partial class MainWindow : Window
             { reader.FocusSearch(); e.Handled = true; return; }
             if (reader is not null && Keyboard.Modifiers == ModifierKeys.None && e.Key == Key.Escape)
             { e.Handled = true; await reader.ResetSearch(); return; }
-            if (e.Key == Key.F5) { e.Handled = true; NavigateFromReader(s => s.View.Reload()); }
-            if (e.SystemKey == Key.Left && Current?.View.CanGoBack == true) { e.Handled = true; NavigateFromReader(s => s.View.GoBack()); }
+            if (e.Key == Key.F5) { e.Handled = true; NavigateFromReader(s => s.View.Reload(), true); }
+            if (e.SystemKey == Key.Left && (reader is not null || Current?.View.CanGoBack == true)) { e.Handled = true; NavigateFromReader(s => s.View.GoBack()); }
         };
         if (desktopFeatures)
         {
@@ -116,11 +122,15 @@ public partial class MainWindow : Window
         store.Settings.Profiles.FirstOrDefault(p => p.Id == id)?.SetStatus(status);
         if (Profiles.SelectedItem is AccountProfile selected) ConnectionStatus.Text = selected.StatusText;
         desktop?.UpdateCounts(store.Settings.Profiles);
-    }    private void CloseReader()
+    }
+    private void CloseReader() => ResetReader(false);
+    private void ResetReader(bool keepReading)
     {
-        readerMode = false;
+        readerMode = keepReading;
         reader?.Close(); reader = null; ReaderHost.Children.Clear();
-        ReaderHost.Visibility = Visibility.Collapsed; BrowserHost.Visibility = Visibility.Visible;
+        ReaderHost.Visibility = keepReading ? Visibility.Visible : Visibility.Collapsed;
+        BrowserHost.Visibility = keepReading ? Visibility.Hidden : Visibility.Visible;
+        Current?.SetReadingOnly(keepReading);
         ReaderButton.Content = "Только важное";
     }
     private async void Reader_Click(object sender, RoutedEventArgs e)
@@ -162,8 +172,7 @@ public partial class MainWindow : Window
     private async Task ShowProfile()
     {
         var keepReaderMode = readerMode;
-        CloseReader();
-        readerMode = keepReaderMode;
+        ResetReader(keepReaderMode);
         foreach (var s in sessions.Values) s.SetActive(false);
         EmptyLabel.Visibility = Profiles.SelectedItem is AccountProfile ? Visibility.Collapsed : Visibility.Visible;
         if (Profiles.SelectedItem is not AccountProfile profile) return;
@@ -175,6 +184,7 @@ public partial class MainWindow : Window
             try { await session.Initialize(profile.Id); }
             catch { sessions.Remove(profile.Id); BrowserHost.Children.Remove(session.View); session.Dispose(); throw; }
         }
+        session.SetReadingOnly(readerMode);
         session.SetActive(true);
         ConnectionStatus.Text = profile.StatusText;
         if (readerMode) await OpenReader();
@@ -188,9 +198,9 @@ public partial class MainWindow : Window
         ProfileActionsButton.ContextMenu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
         ProfileActionsButton.ContextMenu.IsOpen = true;
     }
-    private void Back_Click(object sender, RoutedEventArgs e) { if (Current?.View.CanGoBack == true) NavigateFromReader(s => s.View.GoBack()); }
-    private void Reload_Click(object sender, RoutedEventArgs e) { if (Current is not null) NavigateFromReader(s => s.View.Reload()); else _ = Run(ShowProfile); }
-    private void Home_Click(object sender, RoutedEventArgs e) => NavigateFromReader(s => s.View.CoreWebView2.Navigate("https://e.mail.ru/inbox/"));
+    private void Back_Click(object sender, RoutedEventArgs e) { if ((reader is not null || Current?.View.CanGoBack == true)) NavigateFromReader(s => s.View.GoBack()); }
+    private void Reload_Click(object sender, RoutedEventArgs e) { if (Current is not null) NavigateFromReader(s => s.View.Reload(), true); else _ = Run(ShowProfile); }
+    private void Home_Click(object sender, RoutedEventArgs e) => NavigateFromReader(s => s.View.CoreWebView2.Navigate("https://e.mail.ru/inbox/"), true);
     private async void Pause_Click(object sender, RoutedEventArgs e)
     {
         if (MessageBox.Show(this, "Фильтры будут переключены, а открытые страницы перезагружены. Сохраните незавершённые письма перед продолжением.", "Переключение фильтров", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;

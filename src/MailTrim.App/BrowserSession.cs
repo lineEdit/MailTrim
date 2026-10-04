@@ -9,6 +9,15 @@ namespace MailTrim.App;
 public sealed class BrowserSession : IDisposable
 {
     public WebView2 View { get; } = new();
+    private ReaderDataService? readerData;
+    public ReaderDataService ReaderData => readerData ??= new ReaderDataService(this);
+    public bool ReadingOnly { get; private set; }
+    private bool active;
+    public void SetReadingOnly(bool reading)
+    {
+        ReadingOnly = reading;
+        View.Visibility = !active ? Visibility.Collapsed : reading && !ReaderReplyOpen ? Visibility.Hidden : Visibility.Visible;
+    }
     public ReaderPosition? ReaderState { get; set; }
     public bool ReaderReplyOpen { get; set; }
     public MessageCache Cache { get; private set; } = null!;
@@ -34,7 +43,8 @@ public sealed class BrowserSession : IDisposable
 
     public void SetActive(bool active)
     {
-        View.Visibility = active ? Visibility.Visible : Visibility.Collapsed;
+        this.active = active;
+        View.Visibility = !active ? Visibility.Collapsed : ReadingOnly && !ReaderReplyOpen ? Visibility.Hidden : Visibility.Visible;
         foreach (var p in popups.ToArray()) { if (active) p.Window.Show(); else p.Window.Hide(); }
     }
 
@@ -202,7 +212,7 @@ public sealed class BrowserSession : IDisposable
     }
     public void Dispose()
     {
-        disposed = true;
+        disposed = true; readerData?.Dispose();
         foreach (var p in popups.ToArray()) p.Window.Close();
         View.Dispose(); scripts.Clear();
     }

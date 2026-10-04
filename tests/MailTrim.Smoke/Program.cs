@@ -60,6 +60,7 @@ internal static class Program
                 await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('dynamic').innerHTML = '<div id=late-ad role=listitem class=card><span>Реклама 6+</span><a href=https://r.mail.ru/test>Late ad</a></div>'");
                 await WaitForScript(a, "document.getElementById('late-ad').getBoundingClientRect().height === 0");
                 Check(true, "late SPA ad hidden");
+
                 await a.View.CoreWebView2.ExecuteScriptAsync("""
                     document.body.insertAdjacentHTML('beforeend', `<div id="store-overlay" style="position:fixed;inset:0;background:#8888"><div style="position:absolute;left:100px;top:50px;width:420px;height:500px;background:white">
                     <button aria-label="Закрыть" style="position:absolute;right:8px;top:8px;width:32px;height:32px" onclick="document.getElementById('store-overlay').remove()">×</button>
@@ -156,6 +157,26 @@ internal static class Program
                 var sentinel = "private-email@example.org?token=secret";
                 store.Log(sentinel); store.Log("test_event");
                 Check(!File.ReadAllText(Path.Combine(root, "events.log")).Contains(sentinel), "log rejects sensitive strings");
+                a.View.CoreWebView2.WebResourceRequested += (_, e) =>
+                {
+                    var path = new Uri(e.Request.Uri).AbsolutePath;
+                    if (path is not ("/__pipeline_slow" or "/__pipeline_fast")) return;
+                    var html = path.EndsWith("slow") ? "<html><body><script>setTimeout(()=>document.body.innerHTML='<div class=letter-body__body>Late old letter</div>',1800)</script></body></html>"
+                        : "<html><body><aside>Ambient advertising</aside><div class=letter-body__body>Current clean letter<script>window.secret=1</script></div></body></html>";
+                    e.Response = a.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(html)), 200, "OK", "Content-Type: text/html; charset=utf-8");
+                };
+                using (var cancelRead = new CancellationTokenSource())
+                {
+                    var old = a.ReaderData.Read(new ReaderLetter("https://e.mail.ru/__pipeline_slow", "old", "old", "", ""), cancelRead.Token);
+                    await Task.Delay(100); cancelRead.Cancel();
+                    var next = a.ReaderData.Read(new ReaderLetter("https://e.mail.ru/__pipeline_fast", "new", "new", "", ""), CancellationToken.None);
+                    bool cancelledOld = false;
+                    try { await old; } catch (OperationCanceledException) { cancelledOld = true; }
+                    var result = await next;
+                    Check(cancelledOld && result.Blocks.Single().Text == "Current clean letter", "queue cancels old extraction and emits only current message data");
+                    Check(!result.Blocks.Any(b => b.Text.Contains("Ambient") || b.Text.Contains("secret")), "pipeline excludes page advertising and executable markup");
+                }
+                a.Cache.Clear();
                 await Navigate(a, "https://e.mail.ru/__mailtrim_reader");
                 await a.View.CoreWebView2.ExecuteScriptAsync("""
                 history.replaceState(null,'','/inbox/action-test');
@@ -209,7 +230,7 @@ internal static class Program
                 var completedReaderNavigation = false;
                 a.View.CoreWebView2.NavigationCompleted += (_, _) => completedReaderNavigation = true;
                 readerList.SelectedIndex = 0;
-                for (int i = 0; i < 100 && !readerList.IsEnabled; i++) await Task.Delay(100);
+                for (int i = 0; i < 100 && pane.IsLoading; i++) await Task.Delay(100);
                 var readerBody = (StackPanel)((ScrollViewer)((DockPanel)pane.Children[1]).Children[1]).Content;
                 Check(readerBody.Children.OfType<TextBlock>().Any(t => t.Text.Contains("Safe text")), "native reader renders message after canonical URL change with fallback body container");
                 Check(!completedReaderNavigation, "reader displays text before slow image finishes loading");
@@ -275,12 +296,29 @@ internal static class Program
                 resumed.UpdateLayout(); restoredScroll.ScrollToVerticalOffset(a.ReaderState!.BodyOffset); resumed.UpdateLayout();
                 Check(a.ReaderState.BodyOffset >= 100 && restoredScroll.VerticalOffset >= 100, "reader captures nonzero body scroll offset per profile");
                 resumed.Close(); host.Children.Remove(resumed);
+
+                a.Cache.Clear();
+                a.ReaderState = new ReaderPosition(new[] {
+                    new ReaderLetter("https://e.mail.ru/__pipeline_slow", "old", "Old", "", ""),
+                    new ReaderLetter("https://e.mail.ru/__pipeline_fast", "new", "New", "", "") }, null, 0, 0);
+                var racePane = new ReaderPane(a, () => { }); host.Children.Add(racePane); await racePane.Start();
+                var raceList = ((DockPanel)racePane.Children[0]).Children.OfType<ListBox>().Single();
+                raceList.SelectedIndex = 0; await Task.Delay(100); raceList.SelectedIndex = 1;
+                for (int i = 0; i < 100 && racePane.IsLoading; i++) await Task.Delay(50);
+                var raceBody = (StackPanel)((ScrollViewer)((DockPanel)racePane.Children[1]).Children[1]).Content;
+                Check(raceBody.Children.OfType<TextBlock>().Any(t => t.Text == "Current clean letter") && !raceBody.Children.OfType<TextBlock>().Any(t => t.Text.Contains("Late old")), "rapid message selection renders only newest requested data");
+                a.SetActive(true);
+                Check(a.ReadingOnly && a.View.Visibility == Visibility.Hidden, "active source remains hidden during native reading");
+                raceList.SelectedIndex = 0; await Task.Delay(100);
+                racePane.Close(); host.Children.Remove(racePane); await Task.Delay(250);
+                Check(raceBody.Children.Count == 0, "closed renderer ignores cancelled in-flight message data");
+                a.Cache.Clear();
                 Console.WriteLine("Checking whole-mailbox scan with synthetic folders…");
-                var batchResult = await new ReaderSource(a).CacheMailbox(_ => { }, _ => { }, CancellationToken.None);
+                var batchResult = await a.ReaderData.CacheMailbox(_ => { }, _ => { }, CancellationToken.None);
                 Check(batchResult.Folders == 7 && batchResult.Saved == 2 && batchResult.Failed == 0 && batchResult.UncertainFolders == 0, "batch scans default and discovered folders to the end and persists messages");
                 using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
                 bool stopped = false;
-                try { await new ReaderSource(a).CacheMailbox(_ => { }, _ => { }, cancelled.Token); } catch (OperationCanceledException) { stopped = true; }
+                try { await a.ReaderData.CacheMailbox(_ => { }, _ => { }, cancelled.Token); } catch (OperationCanceledException) { stopped = true; }
                 Check(stopped && reopenedCache.List().Count == 2, "cancelling batch preserves saved messages");
                 await a.ClearData();
                 Check(reopenedCache.List().Count == 0, "clearing profile also clears encrypted reader cache");                host.Children.Remove(pane);
@@ -302,21 +340,32 @@ internal static class Program
                 {
                     profiles.SelectedIndex = index;
                     for (int i = 0; i < 100 && !shell.IsEnabled; i++) await Task.Delay(50);
-                    Check(readerHost.Visibility == Visibility.Visible && readerHost.Children.Count == 1 && toggleReader.Content.ToString() == "Оригинал", "reader mode survives switching account tab");
+                    Check(browserHost.Visibility == Visibility.Hidden && readerHost.Visibility == Visibility.Visible && readerHost.Children.Count == 1 && toggleReader.Content.ToString() == "Оригинал", "reader mode survives switching account tab");
                     var activeList = ((DockPanel)((ReaderPane)readerHost.Children[0]).Children[0]).Children.OfType<ListBox>().Single();
                     Check(activeList.Items.Cast<ReaderLetter>().Single().Sender == store.Settings.Profiles[index].Name, "switched reader shows only selected account cache");
                 }
                 var firstView = browserHost.Children.OfType<Microsoft.Web.WebView2.Wpf.WebView2>().First();
+                Check(browserHost.Visibility == Visibility.Hidden && browserHost.Children.OfType<Microsoft.Web.WebView2.Wpf.WebView2>().All(v => !v.IsVisible), "reader keeps source web surfaces invisible across account switches");
+
                 firstView.CoreWebView2.WebResourceRequested += (_, e) =>
                 {
                     if (new Uri(e.Request.Uri).AbsolutePath == "/__mailtrim_reader")
                         e.Response = firstView.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes("<html><body><div class='letter-body__body'>Synthetic account reply</div><textarea id='account-draft'>Account one draft</textarea></body></html>")), 200, "OK", "Content-Type: text/html; charset=utf-8");
                 };
+                firstView.CoreWebView2.WebResourceRequested += (_, e) =>
+                {
+                    if (new Uri(e.Request.Uri).AbsolutePath == "/inbox/")
+                        e.Response = firstView.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes("<html><body><a class='js-letter-list-item' href='/__mailtrim_reader'><span>Sender</span><span>Subject</span><span>Preview</span><span>Today</span></a></body></html>")), 200, "OK", "Content-Type: text/html; charset=utf-8");
+                };
+                ((Button)shell.FindName("HomeButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                for (int i = 0; i < 600 && !shell.IsEnabled; i++) await Task.Delay(50);
+                Check(shell.IsEnabled && readerHost.Visibility == Visibility.Visible && browserHost.Visibility == Visibility.Hidden && toggleReader.Content.ToString() == "Оригинал", "inbox navigation refreshes data without exposing original page");
                 var firstPane = (ReaderPane)readerHost.Children[0];
                 var firstList = ((DockPanel)firstPane.Children[0]).Children.OfType<ListBox>().Single();
                 firstList.SelectedIndex = 0;
-                for (int i = 0; i < 100 && !firstList.IsEnabled; i++) await Task.Delay(50);
+                for (int i = 0; i < 100 && firstPane.IsLoading; i++) await Task.Delay(50);
                 await firstPane.PerformAction(ReaderAction.Reply);
+                if (!firstPane.IsReplyVisible) Console.WriteLine($"Synthetic reply state: rows={firstList.Items.Count}, loading={firstPane.IsLoading}, selected={firstList.SelectedIndex}, notice={((StackPanel)((DockPanel)firstPane.Children[0]).Children[0]).Children.OfType<TextBlock>().Last().Text}");
                 Check(firstPane.IsReplyVisible, "account reply opens inside production shell");
                 await firstView.CoreWebView2.ExecuteScriptAsync("document.body.insertAdjacentHTML('beforeend','<a id=live-count href=/inbox/ data-unread-count=3>Входящие</a>')");
                 await shell.RefreshVisibleMailboxStatus();

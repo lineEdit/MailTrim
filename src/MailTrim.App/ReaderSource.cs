@@ -28,7 +28,7 @@ public sealed class ReaderSource(BrowserSession session)
             token.ThrowIfCancellationRequested();
             if (!NavigationPolicy.IsMail(session.View.CoreWebView2.Source)) throw new IOException("sign_in_required");
             var blocks = await Extract<List<ReaderBlock>>(ReaderScript.Body);
-            if (blocks?.Count > 0) return blocks;
+            if (blocks?.Count > 0) return ReaderData.Clean(blocks);
             await Task.Delay(150, token);
         }
         throw new IOException("message_not_ready");
@@ -74,7 +74,7 @@ public sealed class ReaderSource(BrowserSession session)
                 foreach (var extra in await Extract<List<string>>(Folders) ?? []) AddFolder(extra);
                 var rows = await Extract<List<ReaderLetter>>(ReaderScript.List) ?? [];
                 token.ThrowIfCancellationRequested();
-                foreach (var row in rows.Where(r => NavigationPolicy.IsMail(r.Url)))
+                foreach (var row in rows.Select(ReaderData.Clean).OfType<ReaderLetter>())
                     if (messages.TryAdd(row.Url, row)) discovered(row);
                 unchanged = messages.Count == previousCount ? unchanged + 1 : 0; previousCount = messages.Count;
                 var scroll = await Extract<ScrollState>(Advance);
