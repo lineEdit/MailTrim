@@ -115,9 +115,47 @@ using (var client = new HttpClient(new FeedHandler(_ => { var response = new Htt
     bool correct = false; try { await UpdateCatalogClient.Fetch(client, feedUri, true); } catch (UpdateCheckException ex) { correct = ex.Error == UpdateCheckError.ResponseTooLarge; }
     Check(correct, "feed rejects oversized response before reading");
 }
+async Task<bool> CompressedFeed(string json, string encoding, UpdateCheckError? expected = null)
+{
+    using var compressed = new MemoryStream();
+    using (Stream encoder = encoding == "gzip"
+        ? new System.IO.Compression.GZipStream(compressed, System.IO.Compression.CompressionMode.Compress, true)
+        : new System.IO.Compression.BrotliStream(compressed, System.IO.Compression.CompressionMode.Compress, true))
+        encoder.Write(System.Text.Encoding.UTF8.GetBytes(json));
+    var body = compressed.ToArray();
+    using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+    using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+    listener.Start();
+    var address = new Uri($"http://127.0.0.1:{((System.Net.IPEndPoint)listener.LocalEndpoint).Port}/releases");
+    var server = Task.Run(async () =>
+    {
+        using var peer = await listener.AcceptTcpClientAsync(deadline.Token);
+        await using var stream = peer.GetStream();
+        using var reader = new StreamReader(stream, System.Text.Encoding.ASCII, false, 1024, true);
+        bool negotiated = false; string? line;
+        while (!string.IsNullOrEmpty(line = await reader.ReadLineAsync(deadline.Token)))
+            if (line.StartsWith("Accept-Encoding:", StringComparison.OrdinalIgnoreCase) && line.Contains(encoding, StringComparison.OrdinalIgnoreCase)) negotiated = true;
+        var headers = System.Text.Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Encoding: {encoding}\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n");
+        await stream.WriteAsync(headers, deadline.Token);
+        await stream.WriteAsync(body, deadline.Token);
+        return negotiated;
+    });
+    try
+    {
+        using var client = UpdateCatalogClient.CreateClient();
+        bool correct;
+        try { correct = (await UpdateCatalogClient.Fetch(client, address, true, deadline.Token))?.Tag == "v0.10.0" && expected is null; }
+        catch (UpdateCheckException ex) { correct = ex.Error == expected; }
+        return await server && correct;
+    }
+    finally { listener.Stop(); }
+}
+Check(await CompressedFeed(releases, "gzip"), "production update client negotiates and decodes gzip release feed");
+Check(await CompressedFeed(releases, "br"), "production update client negotiates and decodes Brotli release feed");
+Check(await CompressedFeed(releases + new string(' ', 4_000_001), "gzip", UpdateCheckError.ResponseTooLarge), "compressed release feed cannot bypass decompressed size limit");
 if (args.Contains("--verify-update-feed"))
 {
-    using var client = new HttpClient(); client.DefaultRequestHeaders.UserAgent.ParseAdd("MailTrim-test/0.12.1");
+    using var client = UpdateCatalogClient.CreateClient(); client.DefaultRequestHeaders.UserAgent.ParseAdd("MailTrim-test/" + typeof(UpdateCatalogClient).Assembly.GetName().Version!.ToString(3));
     var latest = await UpdateCatalogClient.Fetch(client, new Uri("https://api.github.com/repos/lineEdit/MailTrim/releases?per_page=100"), true);
     Check(latest is not null, "live GitHub feed parsed by application HTTP client");
     Console.WriteLine("Latest published release: " + latest?.Tag);

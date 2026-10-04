@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Net.Http;
 using System.Text.RegularExpressions;
 using System.Windows;
 using MailTrim.Core;
@@ -22,7 +21,7 @@ public static class UpdateChecker
         }
         try
         {
-            using var client = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+            using var client = UpdateCatalogClient.CreateClient();
             client.DefaultRequestHeaders.UserAgent.ParseAdd("MailTrim/" + typeof(UpdateChecker).Assembly.GetName().Version!.ToString(3));
             var endpoint = preview ? "releases?per_page=100" : "releases/latest";
             var latest = await UpdateCatalogClient.Fetch(client, new Uri($"https://api.github.com/repos/{repo}/{endpoint}"), preview);

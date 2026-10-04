@@ -11,6 +11,11 @@ public sealed class UpdateCheckException(UpdateCheckError error) : Exception(err
 }
 public static class UpdateCatalogClient
 {
+    public static HttpClient CreateClient() => new(new HttpClientHandler
+    {
+        AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli
+    }) { Timeout = Timeout.InfiniteTimeSpan };
+
     public static async Task<ReleaseCandidate?> Fetch(HttpClient client, Uri endpoint, bool preview, CancellationToken token = default)
     {
         for (int attempt = 0; attempt < 2; attempt++)
