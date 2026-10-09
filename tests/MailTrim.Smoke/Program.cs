@@ -103,6 +103,33 @@ internal static class Program
                 await WaitForScript(a, "!document.getElementById('store-overlay')");
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("!window.bodyClicked && !!document.getElementById('body-close')") == "true", "store promo dismissed with backdrop; message buttons untouched");
 
+                await a.View.CoreWebView2.ExecuteScriptAsync("""
+                    document.body.insertAdjacentHTML('beforeend', `<div id="split-store-overlay" style="position:fixed;inset:0;background:#8888"><div style="position:absolute;left:100px;top:50px;width:420px;height:500px;background:white">
+                    <div style="position:absolute;right:8px;top:8px;width:32px;height:32px" onclick="document.getElementById('split-store-overlay').remove()"><svg width="32" height="32"><path d="M5 5L25 25M5 25L25 5"/></svg></div>
+                    <div><span>Актуальная</span><span>версия</span><span>Почты</span><span>в</span><span>RuStore</span></div><p>Установите или обновите приложение Mail на Android через RuStore</p><button>Узнать больше</button></div></div>`);
+                    requestAnimationFrame(() => { window.storeLeaked = !!document.getElementById('split-store-overlay') && document.getElementById('split-store-overlay').getBoundingClientRect().height > 0; });
+                    """);
+                await WaitForScript(a, "window.storeLeaked !== undefined");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("!document.getElementById('split-store-overlay') && !window.storeLeaked") == "true", "split promo title and DIV/SVG close are handled before next frame");
+
+                await a.View.CoreWebView2.ExecuteScriptAsync("""
+                    document.body.insertAdjacentHTML('beforeend', `<div id="store-portal"><div id="store-shade" style="position:fixed;inset:0;background:#8888"></div>
+                    <div id="store-dialog" role="dialog" style="position:fixed;left:100px;top:50px;width:420px;height:500px;background:white">
+                    <h2 id="store-title">Актуальная версия Почты<br>в RuStore</h2><p>Установите или обновите приложение Mail на Android через RuStore</p><button>Узнать больше</button></div></div>
+                    <div id="working-dialog" role="dialog" style="position:fixed;left:600px;top:50px;width:300px;height:300px;background:white"><h2>Подтвердите действие</h2><input value="Unsent"><button>OK</button></div>`);
+                    requestAnimationFrame(() => { window.fallbackLeaked = document.getElementById('store-dialog').getBoundingClientRect().height > 0 || document.getElementById('store-shade').getBoundingClientRect().height > 0; });
+                    """);
+                await WaitForScript(a, "window.fallbackLeaked !== undefined");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("!window.fallbackLeaked && document.getElementById('working-dialog').getBoundingClientRect().height > 0 && !window.bodyClicked") == "true", "promo without close hides only its panel and sibling backdrop before paint");
+                await a.View.CoreWebView2.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, false, false));
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('store-dialog').getBoundingClientRect().height > 0 && document.getElementById('store-shade').getBoundingClientRect().height > 0") == "true", "filter pause restores fallback-hidden promo and backdrop");
+                await a.View.CoreWebView2.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, true, false));
+                await WaitForScript(a, "document.getElementById('store-dialog').getBoundingClientRect().height === 0");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('store-title').textContent = 'Удалить выбранные письма?'");
+                await WaitForScript(a, "document.getElementById('store-dialog').getBoundingClientRect().height > 0 && document.getElementById('store-shade').getBoundingClientRect().height > 0");
+                Check(true, "reused promo panel becomes visible when changed into a working dialog");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('store-portal').remove(); document.getElementById('working-dialog').remove()");
+
                 await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('late-ad').innerHTML = '<a href=/inbox/789><span>Реклама 6+</span>Real message replacing virtualized ad</a>'");
                 await WaitForScript(a, "document.getElementById('late-ad').getBoundingClientRect().height > 0");
                 Check(true, "virtualized ad reused as message is restored");

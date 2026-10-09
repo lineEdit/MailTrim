@@ -80,6 +80,8 @@ public static class CosmeticScript
           const id = 'mailtrim-cosmetic-style';
           const protectedContent = '.letter-body, .letter__body, .letter-body__body, .compose-app, .compose, [contenteditable="true"], [role="textbox"], textarea, input';
           const marked = new Set();
+          const promos = new Set();
+          const attemptedClose = new WeakSet();
           const expanded = new Set();
           const widened = new Set();
           const stretched = new Set();
@@ -211,22 +213,43 @@ public static class CosmeticScript
           };
           const dismissStorePromo = () => {
             for (const heading of document.querySelectorAll('h1,h2,h3,div,span')) {
-              if (heading.closest(protectedContent) || heading.children.length > 2) continue;
-              const title = (heading.textContent || '').replace(/\s+/g, ' ').trim();
-              if (!/^Актуальная версия Почты в RuStore$/iu.test(title)) continue;
-              for (let panel = heading.parentElement, depth = 0; panel && depth < 6; panel = panel.parentElement, depth++) {
+              if (heading.closest(protectedContent)) continue;
+              const title = (heading.textContent || '').replace(/[\u200b-\u200d\ufeff]/g, '').trim();
+              if (!/^Актуальная\s*версия\s*Почты\s*в\s*RuStore$/iu.test(title)) continue;
+              for (let panel = heading.parentElement, depth = 0; panel && depth < 10; panel = panel.parentElement, depth++) {
                 if (panel.matches('body,main,#app-canvas,[role="main"]') || panel.querySelector(protectedContent)) break;
                 const text = (panel.textContent || '').replace(/\s+/g, ' ');
                 const r = panel.getBoundingClientRect();
                 if (text.length > 1500 || r.width > 650 || r.height > 850) break;
-                if (!/Установите или обновите приложение/iu.test(text) || !/Android/iu.test(text) || r.width < 200 || r.height < 150) continue;
-                const close = [...panel.querySelectorAll('button,[role="button"]')].filter(button => {
+                if (!/Установите\s*или\s*обновите\s*приложение/iu.test(text) || !/Android/iu.test(text) || r.width < 200 || r.height < 150) continue;
+                const close = [...new Set([...panel.querySelectorAll('button,[role="button"],[aria-label],[title],svg')].map(node =>
+                  node.matches('svg') ? node.closest('button,[role="button"],[aria-label],[title]') || node.parentElement : node))].filter(button => {
+                  if (!(button instanceof HTMLElement)) return false;
                   const label = (button.getAttribute('aria-label') || button.getAttribute('title') || button.textContent || '').trim();
                   const b = button.getBoundingClientRect();
                   const corner = b.width > 0 && b.width <= 48 && b.height <= 48 && b.top < r.top + 70 && b.right > r.right - 70;
                   return corner && (/^(?:закрыть|close|×|✕|x)$/iu.test(label) || (!label && button.querySelector('svg')));
                 });
-                if (close.length === 1) { close[0].click(); break; }
+                if (close.length === 1 && !attemptedClose.has(panel)) { attemptedClose.add(panel); close[0].click(); }
+                if (!panel.isConnected) break;
+                // Hide only this identified offer and its isolated overlay island. A close
+                // handler may be absent or asynchronous; never leave the mail behind a shade.
+                const hide = node => { node.setAttribute('data-mailtrim-promo','true'); promos.add(node); };
+                hide(panel);
+                for (let node = panel.parentElement, depth = 0; node && depth < 5; node = node.parentElement, depth++) {
+                  if (node.matches('body,main,#app-canvas,[role="main"]') || node.querySelector(protectedContent)) break;
+                  if ((node.textContent || '').replace(/\s/g,'') !== text.replace(/\s/g,'')) break;
+                  const bounds = node.getBoundingClientRect();
+                  if (getComputedStyle(node).position === 'fixed' && bounds.width >= innerWidth * .8 && bounds.height >= innerHeight * .8) { hide(node); break; }
+                  // Some portals render the backdrop and dialog as siblings.
+                  const siblings = [...node.children].filter(child => !child.contains(panel));
+                  if (siblings.length && siblings.every(child => {
+                    const b = child.getBoundingClientRect();
+                    return !child.textContent.trim() && !child.querySelector('button,a,input,textarea,[role="dialog"]')
+                      && getComputedStyle(child).position === 'fixed' && b.width >= innerWidth * .8 && b.height >= innerHeight * .8;
+                  })) { for (const sibling of siblings) hide(sibling); break; }
+                }
+                break;
               }
             }
           };
@@ -238,6 +261,7 @@ public static class CosmeticScript
               .map(s => s + ' { display: none !important; }').join('\n')
               + (initialGuard ? '\nhtml[data-mailtrim-pending="true"] { opacity: 0 !important; }' : '')
               + (labeledAds ? '\n[data-mailtrim-ad="true"] { display: none !important; }' : '')
+              + (compactLayout ? '\n[data-mailtrim-promo="true"] { display: none !important; }' : '')
               + (compactLayout ? '\n[data-mailtrim-wide="true"] { width: 100% !important; max-width: none !important; margin-inline: 0 !important; box-sizing: border-box !important; }\n[data-mailtrim-fill="true"] { height: 100% !important; }\n[data-mailtrim-viewport="true"] { height: calc(100vh - var(--mailtrim-top)) !important; }\n.thread > .thread__footer:not(.letter-body *, .letter__body *, .compose *, .compose-app *, [contenteditable="true"] *):not(:has(button, input, textarea, [contenteditable="true"])) { display: none !important; }' : '');
           };
           const scan = () => {
@@ -246,12 +270,16 @@ public static class CosmeticScript
             // Virtualized rows may be reused for real messages: undo our markers before reevaluating.
             for (const node of marked) node.removeAttribute('data-mailtrim-ad');
             marked.clear();
-            if (labeledAds) { hideLabeledAds(); dismissStorePromo(); }
+            for (const node of promos) node.removeAttribute('data-mailtrim-promo');
+            promos.clear();
+            if (labeledAds) hideLabeledAds();
+            if (compactLayout) dismissStorePromo();
             fitMailArea();
           };
           const schedule = () => {
             // Restore early CSS immediately; evaluate newly inserted ads before the next paint.
             if (document.documentElement && !document.getElementById(id)) apply();
+            if (compactLayout) dismissStorePromo();
             if (timer == null) timer = requestAnimationFrame(scan);
           };
           const reveal = () => {
@@ -280,6 +308,7 @@ public static class CosmeticScript
             document.documentElement?.removeAttribute('data-mailtrim-pending');
             window.removeEventListener('resize', schedule);
             for (const node of marked) node.removeAttribute('data-mailtrim-ad');
+            for (const node of promos) node.removeAttribute('data-mailtrim-promo');
             for (const node of widened) node.removeAttribute('data-mailtrim-wide');
             for (const node of expanded) node.removeAttribute('data-mailtrim-fill');
             for (const node of stretched) { node.removeAttribute('data-mailtrim-viewport'); node.style.removeProperty('--mailtrim-top'); }
