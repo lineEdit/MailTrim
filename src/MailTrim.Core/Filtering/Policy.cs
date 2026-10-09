@@ -81,6 +81,7 @@ public static class CosmeticScript
           const protectedContent = '.letter-body, .letter__body, .letter-body__body, .compose-app, .compose, [contenteditable="true"], [role="textbox"], textarea, input';
           const protectedSlot = protectedContent.split(',').flatMap(s => [s.trim(), s.trim() + ' *']).join(',');
           const marked = new Set();
+          const topSlots = new Set();
           const promos = new Set();
           const attemptedClose = new WeakSet();
           const expanded = new Set();
@@ -176,6 +177,46 @@ public static class CosmeticScript
             try { const u = new URL(a.getAttribute('href'), location.href); return u.origin === location.origin && !isAdLink(a); }
             catch { return false; }
           });
+          const hideTopPreloader = () => {
+            const workingContent = node => node.closest(protectedContent) || node.querySelector(protectedContent)
+              || node.querySelector('.thread,.letter-list__react,.llct,.letter-list,[role="toolbar"],[role="checkbox"],[role="dialog"],form') || hasMailLink(node);
+            // The recording shows two empty creative rectangles with thin text bars,
+            // before the list toolbar. There is no ad label yet and classes are hashed.
+            // Learn only this textless shape outside mail; retain its slot through loading.
+            for (const slot of topSlots) {
+              if (!slot.isConnected || workingContent(slot)) { slot.removeAttribute('data-mailtrim-top-ad'); topSlots.delete(slot); }
+              else slot.setAttribute('data-mailtrim-top-ad','true');
+            }
+            const gray = node => {
+              const c = getComputedStyle(node).backgroundColor.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/);
+              if (!c || (c[4] !== undefined && +c[4] < .95)) return false;
+              const rgb = c.slice(1,4).map(Number);
+              return Math.min(...rgb) >= 180 && Math.max(...rgb) < 250 && Math.max(...rgb) - Math.min(...rgb) <= 15;
+            };
+            for (const list of document.querySelectorAll('.letter-list__react')) {
+              if (list.closest(protectedContent)) continue;
+              const lr = list.getBoundingClientRect();
+              if (lr.width < 400 || lr.height <= 0) continue;
+              for (let branch = list, depth = 0; branch?.parentElement && depth < 8; branch = branch.parentElement, depth++) {
+                if (branch.matches('body,html,#app-canvas')) break;
+                for (const slot of branch.parentElement.children) {
+                  if (slot === branch || topSlots.has(slot) || workingContent(slot) || slot.textContent.trim()
+                      || slot.querySelector('button,a,img,svg,canvas,iframe,video,[role="button"]')) continue;
+                  const r = slot.getBoundingClientRect();
+                  if (r.height < 48 || r.height > 180 || r.width < lr.width * .75 || r.width > lr.width + 4
+                      || Math.abs(r.left-lr.left) > 12 || r.top < 32 || r.bottom > lr.top + 2 || lr.top-r.bottom > 100) continue;
+                  const shapes = [...slot.querySelectorAll('div,span')].filter(gray).map(n => n.getBoundingClientRect());
+                  const cards = shapes.filter(b => b.width >= 70 && b.width <= 350 && b.height >= 40 && b.height <= 140);
+                  const bars = shapes.filter(b => b.width >= 100 && b.height >= 1 && b.height <= 12);
+                  const pair = cards.some((a,i) => cards.slice(i+1).some(b =>
+                    b.left-a.right >= 100 && Math.abs(a.top-b.top) <= 4 && Math.abs(a.width-b.width) <= 4 && Math.abs(a.height-b.height) <= 4
+                    && [a,b].every(card => bars.some(bar => bar.left >= card.right && bar.top >= card.top && bar.bottom <= card.bottom))));
+                  if (!pair) continue;
+                  slot.setAttribute('data-mailtrim-top-ad','true'); topSlots.add(slot);
+                }
+              }
+            }
+          };
           const hideLabeledAds = () => {
             const hide = node => { node.setAttribute('data-mailtrim-ad', 'true'); marked.add(node); };
             // Current Mail.ru wraps both ad cards and the no-ads offer in a narrow, hashed column.
@@ -262,6 +303,7 @@ public static class CosmeticScript
               .map(s => s + ' { display: none !important; }').join('\n')
               + (initialGuard ? '\nhtml[data-mailtrim-pending="true"] { opacity: 0 !important; }' : '')
               + (labeledAds ? '\n[data-mailtrim-ad="true"] { display: none !important; }' : '')
+              + (labeledAds ? '\n[data-mailtrim-top-ad="true"] { display: none !important; }' : '')
               + (labeledAds ? `\n.js-banner-wrapper-container:not(${protectedSlot}):not(:has(${protectedContent})) { display: none !important; }` : '')
               + (compactLayout ? '\n[data-mailtrim-promo="true"] { display: none !important; }' : '')
               + (compactLayout ? '\n[data-mailtrim-wide="true"] { width: 100% !important; max-width: none !important; margin-inline: 0 !important; box-sizing: border-box !important; }\n[data-mailtrim-fill="true"] { height: 100% !important; }\n[data-mailtrim-viewport="true"] { height: calc(100vh - var(--mailtrim-top)) !important; }\n.thread > .thread__footer:not(.letter-body *, .letter__body *, .compose *, .compose-app *, [contenteditable="true"] *):not(:has(button, input, textarea, [contenteditable="true"])) { display: none !important; }' : '');
@@ -273,7 +315,7 @@ public static class CosmeticScript
             marked.clear();
             for (const node of promos) node.removeAttribute('data-mailtrim-promo');
             promos.clear();
-            if (labeledAds) hideLabeledAds();
+            if (labeledAds) { hideTopPreloader(); hideLabeledAds(); }
             if (compactLayout) dismissStorePromo();
           };
           const scan = () => {
@@ -330,6 +372,7 @@ public static class CosmeticScript
             document.documentElement?.removeAttribute('data-mailtrim-pending');
             window.removeEventListener('resize', schedule);
             for (const node of marked) node.removeAttribute('data-mailtrim-ad');
+            for (const node of topSlots) node.removeAttribute('data-mailtrim-top-ad');
             for (const node of promos) node.removeAttribute('data-mailtrim-promo');
             for (const node of widened) node.removeAttribute('data-mailtrim-wide');
             for (const node of expanded) node.removeAttribute('data-mailtrim-fill');

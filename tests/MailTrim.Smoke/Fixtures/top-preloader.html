@@ -1,0 +1,33 @@
+<!doctype html><html><head><style>
+body { margin:0; }
+main { position:fixed; left:10px; top:80px; width:900px; }
+.reservation { height:90px; display:flex; gap:30px; }
+.creative { display:flex; align-items:center; width:435px; gap:12px; }
+.picture { width:100px; height:70px; background:rgb(236,238,240); }
+.bar { width:280px; height:4px; background:rgb(236,238,240); }
+.letter-list__react { height:400px; }
+.row { height:40px; }
+</style></head><body><main><div id="top-slot"></div><div class="letter-list__react"><button>List toolbar</button><div class="row"><a href="/inbox/123">Real letter</a></div></div></main>
+<div class="letter-body" style="position:fixed;top:550px;left:10px;width:900px"><div id="quoted" class="reservation"><div class="creative"><div class="picture"></div><div class="bar"></div></div><div class="creative"><div class="picture"></div><div class="bar"></div></div></div></div>
+<script>
+window.preloaderLeaks=[]; window.preloaderFrames=0;
+const skeleton = '<div class="creative"><div class="picture"></div><div class="bar"></div></div>'.repeat(2);
+function showPreloader() {
+  document.getElementById('top-slot').outerHTML='<div id="top-slot" class="reservation hash-'+preloaderFrames+'">'+skeleton+'</div>';
+  queueMicrotask(() => {
+    if (document.getElementById('top-slot').getBoundingClientRect().height > 0 || document.querySelector('.letter-list__react').getBoundingClientRect().top !== 80) preloaderLeaks.push('micro-'+preloaderFrames);
+  });
+  requestAnimationFrame(() => {
+    if (document.querySelector('.letter-list__react').getBoundingClientRect().top !== 80) preloaderLeaks.push('frame-'+preloaderFrames);
+    // No label during the network wait; the learned reservation must stay collapsed.
+    document.getElementById('top-slot').innerHTML='<button>Open advertiser</button><span>Creative loaded later</span>';
+    requestAnimationFrame(() => {
+      if (document.querySelector('.letter-list__react').getBoundingClientRect().top !== 80) preloaderLeaks.push('loaded-'+preloaderFrames);
+      if (++preloaderFrames < 6) requestAnimationFrame(showPreloader);
+      else window.preloaderDone=true;
+    });
+  });
+}
+// Start after the initial document guard has been released, like return from a letter.
+setTimeout(() => requestAnimationFrame(showPreloader), 200);
+</script></body></html>

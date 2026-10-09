@@ -81,6 +81,16 @@ internal static class Program
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('startup-mail').getBoundingClientRect().height > 0") == "true", "startup guard preserves real message content");
                 await a.View.CoreWebView2.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, false, false));
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("!document.documentElement.hasAttribute('data-mailtrim-pending') && getComputedStyle(document.getElementById('known-banner')).display !== 'none' && getComputedStyle(document.getElementById('semantic-banner')).display !== 'none'") == "true", "pausing filters releases startup guard and restores banners");
+                await Navigate(a, "https://e.mail.ru/__mailtrim_top_preloader");
+                await WaitForScript(a, "window.preloaderDone === true");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("preloaderLeaks.length === 0 && document.getElementById('quoted').getBoundingClientRect().height === 90 && document.querySelector('.row').getBoundingClientRect().height > 0") == "true", "unlabeled two-card top skeleton stays collapsed before paint across six returns; quoted mail and list remain visible");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('top-slot').innerHTML = '<div role=toolbar><button>Reply</button></div>'");
+                await WaitForScript(a, "document.getElementById('top-slot').getBoundingClientRect().height > 0");
+                Check(true, "learned ad slot reused for working toolbar is restored");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('top-slot').innerHTML = '<div class=creative><div class=picture></div><div class=bar></div></div>'.repeat(2)");
+                await WaitForScript(a, "document.getElementById('top-slot').getBoundingClientRect().height === 0");
+                await a.View.CoreWebView2.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, false, false));
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('top-slot').getBoundingClientRect().height === 90 && !document.querySelector('[data-mailtrim-top-ad]')") == "true", "pause restores top preloader and clears learned slot markers");
                 await Navigate(a, "https://e.mail.ru/__mailtrim_fixture");
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("getComputedStyle(document.querySelector('[data-testid=advertising]')).display") == "\"none\"", "cosmetics injected on trusted origin");
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("getComputedStyle(document.getElementById('message')).display") != "\"none\"", "message content remains visible");
@@ -647,6 +657,8 @@ internal static class Program
             var fixturePath = new Uri(e.Request.Uri).AbsolutePath;
             if (fixturePath == "/__mailtrim_startup")
                 e.Response = session.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "mail-startup.html")))), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
+            if (fixturePath == "/__mailtrim_top_preloader")
+                e.Response = session.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "top-preloader.html")))), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
             if (fixturePath == "/__mailtrim_startup_hold")
             {
                 using var deferral = e.GetDeferral(); await Task.Delay(1800);
