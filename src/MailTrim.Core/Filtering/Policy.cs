@@ -79,6 +79,7 @@ public static class CosmeticScript
           const compactLayout = __ENABLED__;
           const id = 'mailtrim-cosmetic-style';
           const protectedContent = '.letter-body, .letter__body, .letter-body__body, .compose-app, .compose, [contenteditable="true"], [role="textbox"], textarea, input';
+          const protectedSlot = protectedContent.split(',').flatMap(s => [s.trim(), s.trim() + ' *']).join(',');
           const marked = new Set();
           const promos = new Set();
           const attemptedClose = new WeakSet();
@@ -183,7 +184,7 @@ public static class CosmeticScript
               if (offer.closest(protectedContent)) continue;
               let column = null;
               for (let node = offer, depth = 0; node && depth < 10; node = node.parentElement, depth++) {
-                if (node.matches('body, main, #app-canvas, [role="main"]') || hasMailLink(node)) break;
+                if (node.matches('body, main, #app-canvas, [role="main"]') || node.querySelector(protectedContent) || hasMailLink(node)) break;
                 const r = node.getBoundingClientRect();
                 if (r.width > 380 || r.left < innerWidth * .55) break;
                 if (r.width >= 100 && r.height >= 60) column = node;
@@ -202,7 +203,7 @@ public static class CosmeticScript
               if (!/^(?:реклама|advertisement|sponsored)(?:\s*\d{1,2}\+)?$/iu.test(text)) continue;
               let node = label.parentElement, card = null;
               for (let depth = 0; node && depth < 16; depth++, node = node.parentElement) {
-                if (node.matches('body, main, #app-canvas, [role="main"], [role="list"], .llct, .letter-list') || node.closest(protectedContent)) break;
+                if (node.matches('body, main, #app-canvas, [role="main"], [role="list"], .llct, .letter-list') || node.closest(protectedContent) || node.querySelector(protectedContent)) break;
                 if (hasMailLink(node) || node.querySelector('input, textarea, button, [role="toolbar"], [role="checkbox"], [contenteditable="true"]')) break;
                 const r = node.getBoundingClientRect();
                 if (r.height > 500) break;
@@ -261,11 +262,11 @@ public static class CosmeticScript
               .map(s => s + ' { display: none !important; }').join('\n')
               + (initialGuard ? '\nhtml[data-mailtrim-pending="true"] { opacity: 0 !important; }' : '')
               + (labeledAds ? '\n[data-mailtrim-ad="true"] { display: none !important; }' : '')
+              + (labeledAds ? `\n.js-banner-wrapper-container:not(${protectedSlot}):not(:has(${protectedContent})) { display: none !important; }` : '')
               + (compactLayout ? '\n[data-mailtrim-promo="true"] { display: none !important; }' : '')
               + (compactLayout ? '\n[data-mailtrim-wide="true"] { width: 100% !important; max-width: none !important; margin-inline: 0 !important; box-sizing: border-box !important; }\n[data-mailtrim-fill="true"] { height: 100% !important; }\n[data-mailtrim-viewport="true"] { height: calc(100vh - var(--mailtrim-top)) !important; }\n.thread > .thread__footer:not(.letter-body *, .letter__body *, .compose *, .compose-app *, [contenteditable="true"] *):not(:has(button, input, textarea, [contenteditable="true"])) { display: none !important; }' : '');
           };
-          const scan = () => {
-            timer = null;
+          const cleanAds = () => {
             if (!document.getElementById(id)) apply();
             // Virtualized rows may be reused for real messages: undo our markers before reevaluating.
             for (const node of marked) node.removeAttribute('data-mailtrim-ad');
@@ -274,13 +275,33 @@ public static class CosmeticScript
             promos.clear();
             if (labeledAds) hideLabeledAds();
             if (compactLayout) dismissStorePromo();
+          };
+          const scan = () => {
+            timer = null;
+            cleanAds();
             fitMailArea();
           };
           const schedule = () => {
             // Restore early CSS immediately; evaluate newly inserted ads before the next paint.
             if (document.documentElement && !document.getElementById(id)) apply();
-            if (compactLayout) dismissStorePromo();
+            // DOM changes delivered during an animation frame cannot wait for another
+            // animation frame: the browser would paint the new ad in between.
+            cleanAds();
             if (timer == null) timer = requestAnimationFrame(scan);
+          };
+          const changed = records => {
+            const withoutFill = value => (value || '').replace(/--mailtrim-top\s*:[^;]*/g,'').replace(/[;\s]/g,'');
+            const relevant = records.some(record => {
+              const node = record.target.nodeType === Node.ELEMENT_NODE ? record.target : record.target.parentElement;
+              if (node?.closest('#' + id)) return false;
+              // Our stylesheet and layout variables must not create an observer loop.
+              if (record.type === 'childList' && !record.removedNodes.length && record.addedNodes.length
+                  && [...record.addedNodes].every(n => n.nodeType === Node.ELEMENT_NODE && n.id === id)) return false;
+              if (record.type === 'attributes' && record.attributeName === 'style'
+                  && withoutFill(record.oldValue) === withoutFill(node.getAttribute('style'))) return false;
+              return true;
+            });
+            if (relevant) schedule();
           };
           const reveal = () => {
             try { scan(); }
@@ -298,8 +319,9 @@ public static class CosmeticScript
             }
             resizeObserver = new ResizeObserver(schedule);
             apply(); scan();
-            observer = new MutationObserver(schedule);
-            observer.observe(document.documentElement, {childList:true, subtree:true, characterData:true});
+            observer = new MutationObserver(changed);
+            observer.observe(document.documentElement, {childList:true, subtree:true, characterData:true,
+              attributes:true, attributeOldValue:true, attributeFilter:['class','style','href','aria-label','hidden']});
             window.addEventListener('resize', schedule);
           };
           window.__mailtrimCleanup = () => {

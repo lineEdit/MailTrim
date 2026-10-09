@@ -95,6 +95,44 @@ internal static class Program
                 Check(true, "late SPA ad hidden");
 
                 await a.View.CoreWebView2.ExecuteScriptAsync("""
+                    document.body.insertAdjacentHTML('beforeend', '<main id="spa-switch" style="position:fixed;left:10px;top:100px;width:650px"><div id="spa-slot"></div><div id="spa-letter" class="letter-body" style="height:100px">Letter zero</div></main>');
+                    window.spaLeaks = []; window.spaFrames = 0;
+                    const spaLetter = document.getElementById('spa-letter');
+                    function switchFixtureLetter() {
+                      const step = window.spaFrames;
+                      spaLetter.textContent = 'Letter ' + step;
+                      document.getElementById('spa-slot').outerHTML = `<div id="spa-slot"><div id="spa-banner" style="height:90px;width:600px"><span style="font-size:12px">Реклама 0+</span><div>New banner ${step}</div></div></div>`;
+                      queueMicrotask(() => { if (document.getElementById('spa-banner').getBoundingClientRect().height > 0 || spaLetter.getBoundingClientRect().top !== 100) window.spaLeaks.push('microtask-' + step); });
+                      requestAnimationFrame(() => {
+                        if (document.getElementById('spa-banner').getBoundingClientRect().height > 0 || spaLetter.getBoundingClientRect().top !== 100 || spaLetter.getBoundingClientRect().height === 0) window.spaLeaks.push(step);
+                        if (++window.spaFrames < 6) requestAnimationFrame(switchFixtureLetter);
+                        else window.spaDone = true;
+                      });
+                    }
+                    requestAnimationFrame(switchFixtureLetter);
+                    """);
+                await WaitForScript(a, "window.spaDone === true");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("spaLeaks.length === 0 && document.getElementById('spa-letter').textContent === 'Letter 5'") == "true", "switching letters inside animation frames never paints new banners or shifts message position");
+                await a.View.CoreWebView2.ExecuteScriptAsync("""
+                    document.getElementById('spa-slot').outerHTML = '<div id="spa-slot"><div id="spa-delayed" style="display:none;height:90px;width:600px"><span style="font-size:12px">Реклама 0+</span><div>Delayed creative</div></div></div>';
+                    requestAnimationFrame(() => {
+                      document.getElementById('spa-delayed').style.display = 'block';
+                      queueMicrotask(() => { window.spaAttributeMicroSafe = document.getElementById('spa-delayed').getBoundingClientRect().height === 0; });
+                      requestAnimationFrame(() => { window.spaAttributeSafe = document.getElementById('spa-delayed').getBoundingClientRect().height === 0 && document.getElementById('spa-letter').getBoundingClientRect().top === 100; });
+                    });
+                    """);
+                await WaitForScript(a, "window.spaAttributeSafe !== undefined");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("spaAttributeSafe && spaAttributeMicroSafe") == "true", "attribute-only late banner visibility is filtered before paint");
+                await a.View.CoreWebView2.ExecuteScriptAsync("""
+                    document.getElementById('spa-slot').outerHTML = '<div id="spa-slot"><div id="spa-reserved" class="js-banner-wrapper-container" style="height:90px;width:600px"></div></div>';
+                    requestAnimationFrame(() => { window.spaReservedSafe = document.getElementById('spa-reserved').getBoundingClientRect().height === 0 && document.getElementById('spa-letter').getBoundingClientRect().top === 100; });
+                    document.getElementById('spa-letter').insertAdjacentHTML('beforeend', '<div id="spa-protected-slot" class="js-banner-wrapper-container" style="height:30px">Quoted message markup</div>');
+                    """);
+                await WaitForScript(a, "window.spaReservedSafe !== undefined");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("spaReservedSafe && document.getElementById('spa-protected-slot').getBoundingClientRect().height > 0") == "true", "empty ad reservation stays collapsed while matching markup inside mail stays visible");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('spa-switch').remove()");
+
+                await a.View.CoreWebView2.ExecuteScriptAsync("""
                     document.body.insertAdjacentHTML('beforeend', `<div id="store-overlay" style="position:fixed;inset:0;background:#8888"><div style="position:absolute;left:100px;top:50px;width:420px;height:500px;background:white">
                     <button aria-label="Закрыть" style="position:absolute;right:8px;top:8px;width:32px;height:32px" onclick="document.getElementById('store-overlay').remove()">×</button>
                     <h2>Актуальная версия Почты в RuStore</h2><p>Установите или обновите приложение Mail на Android через RuStore</p><button>Узнать больше</button></div></div>`);
