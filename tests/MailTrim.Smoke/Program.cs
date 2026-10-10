@@ -354,12 +354,15 @@ internal static class Program
                 a.View.CoreWebView2.NavigationStarting += (_, _) => readerNavigations++;
                 readerList.SelectedIndex = -1; readerList.SelectedIndex = 0;
                 Check(readerList.IsEnabled && readerNavigations == 0 && readerBody.Children.OfType<TextBlock>().Any(t => t.Text.Contains("Safe text")), "cached letter reopens synchronously without network navigation");
+                await pane.BackgroundMessageRefresh.WaitAsync(TimeSpan.FromSeconds(5));
+                Check(readerNavigations > 0, "cached preview is revalidated against the official page instead of staying cache-only");
+                var searchNavigations = readerNavigations;
                 await pane.SearchSaved("missing-search-fixture-9347");
-                Check(readerList.Items.Count == 0 && readerNavigations == 0, "cache search shows empty result without navigating mail");
+                Check(readerList.Items.Count == 0 && readerNavigations == searchNavigations, "cache search shows empty result without navigating mail");
                 await pane.SearchSaved("sAfE TeXt");
-                Check(readerList.Items.Count == 1 && readerNavigations == 0, "case-insensitive search finds cached body locally");
+                Check(readerList.Items.Count == 1 && readerNavigations == searchNavigations, "case-insensitive search finds cached body locally");
                 readerList.SelectedIndex = 0;
-                Check(readerList.IsEnabled && readerNavigations == 0 && readerBody.Children.OfType<TextBlock>().Any(t => t.Text.Contains("Safe text")), "search result opens from cache without network");
+                Check(readerList.IsEnabled && readerNavigations == searchNavigations && readerBody.Children.OfType<TextBlock>().Any(t => t.Text.Contains("Safe text")), "search result opens from cache without network");
                 await pane.SearchSaved(""); readerList.SelectedIndex = 0;
                 Check(readerList.Items.Count == 1, "clearing search restores original reader list");
                 var browserParentBeforeReply = a.View.Parent;
@@ -435,13 +438,20 @@ internal static class Program
                 b.Cache.Save(retained, [new ReaderBlock("Cached reading text", "")]);
                 b.Cache.Save(archived, [new ReaderBlock("Archived text", "")]);
                 var emptyInbox = false;
+                var confirmedEmptyInbox = false;
+                var freshBodyText = "Cached reading text";
                 TaskCompletionSource refreshStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
                 async void RefreshFixture(object? sender, CoreWebView2WebResourceRequestedEventArgs e)
                 {
+                    if (new Uri(e.Request.Uri).AbsolutePath == "/__mailtrim_reader")
+                    {
+                        e.Response = b.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes("<html><body><div class='letter-body__body'>" + freshBodyText + "</div></body></html>")), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
+                        return;
+                    }
                     if (new Uri(e.Request.Uri).AbsolutePath != "/inbox/") return;
                     using var deferral = e.GetDeferral(); refreshStarted.TrySetResult();
                     await Task.Delay(700);
-                    var html = emptyInbox ? "<html><body>Sign in required</body></html>" : """
+                    var html = emptyInbox ? "<html><body>Sign in required</body></html>" : confirmedEmptyInbox ? "<html><body><div class='letter-list__react'>Empty folder</div></body></html>" : """
                         <html><body>
                         <a class="js-letter-list-item" href="/__refresh_new"><span>Fresh sender</span><span>New incoming</span><span>Fresh preview</span><time datetime="2027-01-01T12:00:00Z">01.01.27</time></a>
                         <a class="js-letter-list-item" href="/__mailtrim_reader"><span>Retained sender</span><span>Retained updated</span><span>Preview</span><time datetime="2026-10-01T12:00:00Z">01.10.26</time></a>
@@ -464,25 +474,46 @@ internal static class Program
                 freshBody.Children.Add(new TextBlock { Text = string.Join("\n", Enumerable.Repeat("Reading position", 100)) });
                 freshPane.UpdateLayout(); freshScroll.ScrollToVerticalOffset(120); freshPane.UpdateLayout();
                 await freshPane.BackgroundRefresh.WaitAsync(TimeSpan.FromSeconds(12)); freshPane.UpdateLayout();
-                Check(freshList.Items.Count == 3 && ((ReaderLetter)freshList.Items[0]).Subject == "New incoming" && freshList.Items.Cast<ReaderLetter>().Any(x => x.Url == archived.Url), "automatic refresh merges new incoming mail and keeps cached folders in date order");
+                Check(freshList.Items.Count == 2 && ((ReaderLetter)freshList.Items[0]).Subject == "New incoming" && !freshList.Items.Cast<ReaderLetter>().Any(x => x.Url == archived.Url), "live inbox is rendered from current website rows rather than mixed with cached archive");
                 Check(((ReaderLetter)freshList.SelectedItem).Url == retained.Url && freshBody.Children.Contains(retainedText) && freshScroll.VerticalOffset >= 100, "automatic refresh keeps selected message, rendered body and scroll");
                 Check(((ReaderLetter)freshList.SelectedItem).Subject == "Retained updated" && b.Cache.List().Count == 3 && b.Cache.Get("https://e.mail.ru/__refresh_new") is null, "fresh metadata updates existing row and persists new headers without opening messages");
                 await freshPane.RefreshList();
-                Check(freshList.Items.Count == 3 && freshBody.Children.Contains(retainedText), "manual refresh also preserves cached folders and displayed content");
+                Check(freshList.Items.Count == 2 && freshBody.Children.Contains(retainedText), "manual live refresh preserves selected message and displayed content");
+                await b.View.CoreWebView2.ExecuteScriptAsync("document.body.insertAdjacentHTML('afterbegin', '<div data-testid=advertising>Page advertising must never be drawn</div><a class=js-letter-list-item href=/api-proxy/rb-mimic/ad><span>Ad sender</span><span>Ad subject</span></a><a class=js-letter-list-item href=/__live_new><span>Live sender</span><span>Live arrival</span><span>Preview</span><time datetime=2027-01-02T12:00:00Z>02.01.27</time></a>')");
+                for (var liveWait = 0; liveWait < 50 && !freshList.Items.Cast<ReaderLetter>().Any(x => x.Subject == "Live arrival"); liveWait++) await Task.Delay(100);
+                Check(freshList.Items.Count == 3 && freshList.Items.Cast<ReaderLetter>().Any(x => x.Subject == "Live arrival") && !freshList.Items.Cast<ReaderLetter>().Any(x => x.Sender == "Ad sender") && freshBody.Children.Contains(retainedText), "automatic DOM sampling renders new mail and excludes page advertising without disturbing the reading body");
+                freshBodyText = "Fresh body changed on website";
+                freshList.SelectedIndex = -1; freshList.SelectedItem = freshList.Items.Cast<ReaderLetter>().Single(x => x.Url == retained.Url);
+                Check(freshBody.Children.OfType<TextBlock>().Any(x => x.Text == "Cached reading text"), "old body is only an immediate preview before site revalidation");
+                await freshPane.BackgroundMessageRefresh.WaitAsync(TimeSpan.FromSeconds(5));
+                Check(freshBody.Children.OfType<TextBlock>().Any(x => x.Text == freshBodyText) && b.Cache.Get(retained.Url)!.Any(x => x.Text == freshBodyText), "changed website body replaces the cache preview and updates its encrypted copy");
+                confirmedEmptyInbox = true;
+                await freshPane.SynchronizeLive(true);
+                Check(freshList.Items.Count == 0 && b.Cache.List().Count == 4, "confirmed empty live folder clears the view while preserving offline copies");
+                confirmedEmptyInbox = false;
+                var liveFolders = ((StackPanel)((DockPanel)freshPane.Children[0]).Children[0]).Children.OfType<ComboBox>().Single();
+                liveFolders.SelectedItem = liveFolders.Items.Cast<ReaderFolder>().Single(x => x.Name == "Отправленные");
+                for (var folderWait = 0; folderWait < 100 && freshPane.IsLoading; folderWait++) await Task.Delay(100);
+                Check(freshList.Items.Count == 1 && new Uri(b.View.CoreWebView2.Source).AbsolutePath == "/sent/", "native folder switch reads the official sent page instead of selecting a cache category");
                 var headerPath = Path.Combine(root, "ReaderCache", secondProfileId.ToString("N"), "headers.index");
                 Check(!Encoding.UTF8.GetString(File.ReadAllBytes(headerPath)).Contains("Fresh sender"), "refreshed mail headers are encrypted on disk");
-                freshPane.Close(); host.Children.Remove(freshPane);
+                freshPane.Close(); host.Children.Remove(freshPane); b.ReaderState = null;
                 emptyInbox = true;
                 var offlinePane = new ReaderPane(b, () => { }); host.Children.Add(offlinePane); await offlinePane.Start();
                 await offlinePane.BackgroundRefresh.WaitAsync(TimeSpan.FromSeconds(15));
-                Check(((DockPanel)offlinePane.Children[0]).Children.OfType<ListBox>().Single().Items.Count == 3 && b.Cache.List().Count == 3, "empty or unauthenticated web response never erases cached mail");
+                Check(((DockPanel)offlinePane.Children[0]).Children.OfType<ListBox>().Single().Items.Count == 4 && b.Cache.List().Count == 4, "empty or unauthenticated web response never erases cached mail");
                 offlinePane.Close(); host.Children.Remove(offlinePane); emptyInbox = false;
                 refreshStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
                 var replyRefreshPane = new ReaderPane(b, () => { }); host.Children.Add(replyRefreshPane); await replyRefreshPane.Start();
                 await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                var replyLiveList = ((DockPanel)replyRefreshPane.Children[0]).Children.OfType<ListBox>().Single();
+                replyLiveList.SelectedItem = replyLiveList.Items.Cast<ReaderLetter>().Single(x => x.Url == retained.Url);
                 await replyRefreshPane.PerformAction(ReaderAction.Reply);
                 await replyRefreshPane.BackgroundRefresh.WaitAsync(TimeSpan.FromSeconds(5));
                 Check(replyRefreshPane.IsReplyVisible && b.ReaderReplyOpen, "reply cancels background refresh and prevents retry over the official editor");
+                var sourceDuringReply = b.View.CoreWebView2.Source;
+                await replyRefreshPane.SynchronizeLive(true);
+                Check(b.View.CoreWebView2.Source == sourceDuringReply, "live synchronization cannot navigate the reply editor");
                 await replyRefreshPane.ReturnToReading(true); replyRefreshPane.Close(); host.Children.Remove(replyRefreshPane);
                 var closedRefreshPane = new ReaderPane(b, () => { }); host.Children.Add(closedRefreshPane); await closedRefreshPane.Start();
                 closedRefreshPane.Close(); host.Children.Remove(closedRefreshPane);
@@ -496,9 +527,9 @@ internal static class Program
                 void OriginalLoaded(object? sender, CoreWebView2DOMContentLoadedEventArgs e) { if (new Uri(b.View.CoreWebView2.Source).AbsolutePath == "/__mailtrim_reader") originalReady.TrySetResult(); }
                 b.View.CoreWebView2.DOMContentLoaded += OriginalLoaded;
                 await originalRefreshPane.OpenOriginal();
-                await originalReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                await WaitForScript(b, "document.body.textContent.includes('Fresh body changed on website')");
                 b.View.CoreWebView2.DOMContentLoaded -= OriginalLoaded;
-                Check(originalShown && (await b.View.CoreWebView2.ExecuteScriptAsync("document.body.textContent")).Contains("Safe text"), "switching to original drains cancelled refresh before visible navigation");
+                Check(originalShown && (await b.View.CoreWebView2.ExecuteScriptAsync("document.body.textContent")).Contains("Fresh body changed on website"), "switching to original drains cancelled refresh before visible navigation");
                 originalRefreshPane.Close(); host.Children.Remove(originalRefreshPane);
                 b.View.CoreWebView2.WebResourceRequested -= RefreshFixture;
                 a.Cache.Clear();

@@ -7,6 +7,9 @@ namespace MailTrim.App;
 
 public sealed class ReaderSource(BrowserSession session)
 {
+    public static bool IsFolder(string url) => NavigationPolicy.IsMail(url) && Uri.TryCreate(url, UriKind.Absolute, out var uri)
+        && uri.Query.Length == 0 && uri.Fragment.Length == 0
+        && System.Text.RegularExpressions.Regex.IsMatch(uri.AbsolutePath, @"^/(inbox|sent|drafts|archive|spam|trash|\d+|folder/[^/]+)/?$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
     public async Task<T?> Extract<T>(string script) => JsonSerializer.Deserialize<T>(await session.View.CoreWebView2.ExecuteScriptAsync(script), FilterRules.Json);
     public async Task Navigate(string url, CancellationToken token)
     {

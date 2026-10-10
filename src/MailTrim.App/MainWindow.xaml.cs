@@ -200,7 +200,11 @@ public partial class MainWindow : Window
     }
     private void Back_Click(object sender, RoutedEventArgs e) { if ((reader is not null || Current?.View.CanGoBack == true)) NavigateFromReader(s => s.View.GoBack()); }
     private void Reload_Click(object sender, RoutedEventArgs e) { if (Current is not null) NavigateFromReader(s => s.View.Reload(), true); else _ = Run(ShowProfile); }
-    private void Home_Click(object sender, RoutedEventArgs e) => NavigateFromReader(s => s.View.CoreWebView2.Navigate("https://e.mail.ru/inbox/"), true);
+    private void Home_Click(object sender, RoutedEventArgs e)
+    {
+        if (reader is { IsReplyVisible: false } native) { _ = Run(native.OpenInbox); return; }
+        NavigateFromReader(s => s.View.CoreWebView2.Navigate("https://e.mail.ru/inbox/"), true);
+    }
     private async void Pause_Click(object sender, RoutedEventArgs e)
     {
         if (MessageBox.Show(this, "Фильтры будут переключены, а открытые страницы перезагружены. Сохраните незавершённые письма перед продолжением.", "Переключение фильтров", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;

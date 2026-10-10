@@ -9,7 +9,9 @@ public static class ReaderScript
       const now=new Date(), offset=-now.getTimezoneOffset();
       const captured=new Date(now.getTime()+offset*60000).toISOString().slice(0,-1)
         +(offset>=0?'+':'-')+String(Math.floor(Math.abs(offset)/60)).padStart(2,'0')+':'+String(Math.abs(offset)%60).padStart(2,'0');
-      return [...document.querySelectorAll('a.js-letter-list-item')].slice(0,100).map(row=>{
+      return [...document.querySelectorAll('a.js-letter-list-item')].filter(row=>
+        !row.closest('.letter-list-item-adv,.letter-list-item-adv__container,[data-mailtrim-ad],[data-mailtrim-top-ad],[data-ad-slot]')
+        && !new URL(row.href).pathname.startsWith('/api-proxy/')).slice(0,100).map(row=>{
         const atoms=[...row.querySelectorAll('*')].filter(e=>!e.closest('button,svg,aside') && e.getBoundingClientRect().height>0)
           .map(e=>({e,t:[...e.childNodes].filter(n=>n.nodeType===3).map(n=>n.textContent).join('').trim()})).filter(x=>x.t);
         const last=atoms.at(-1)?.e;
@@ -52,7 +54,11 @@ public static class ReaderScript
       walk(root);flush();return blocks;
     })()
     """;
+
+    public static string Snapshot => "(() => { const letters = " + List + "; return { ready: location.origin === 'https://e.mail.ru' && (letters.length > 0 || !!document.querySelector('.letter-list__react, .letter-list, .llct')), letters }; })()";
 }
+
+public sealed record ReaderListSnapshot(bool Ready, List<ReaderLetter> Letters);
 
 public sealed record ReaderLetter(string Url, string Sender, string Subject, string Preview, string Date,
     DateTimeOffset? ReceivedAt = null, DateTimeOffset? CapturedAt = null, string DateHint = "")
