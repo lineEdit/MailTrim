@@ -57,6 +57,14 @@ internal static class GmailChecks
         check(posts == 0 && sends == 0,"opening unread Gmail does not mark it read or send mail");
         var cache = vault.Load<GmailCache>("cache");
         check(cache?.Bodies.Single().Text == "Synthetic body" && cache.Pages.Single().Page.Messages.Length == 1,"Gmail headers and ready body persist in encrypted cache");
+        var selectedField = typeof(GmailPane).GetField("selected",System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var withImage = ((GmailMessage)selectedField.GetValue(pane)!) with { Images = ["https://image.fixture.test/a"] };
+        selectedField.SetValue(pane,withImage);
+        typeof(GmailPane).GetMethod("Render",System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance,null,[typeof(GmailMessage)],null)!.Invoke(pane,[withImage]);
+        pane.SetActive(false); pane.SetActive(true); await Task.Delay(100);
+        var imageStop = (CancellationTokenSource)typeof(GmailPane).GetField("imageRender",System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(pane)!;
+        check(!imageStop.IsCancellationRequested && Descendants<Button>(pane).Any(b => b.Content?.ToString() == "Показать изображение" && b.IsEnabled),
+            "returning to Gmail renews cancelled image requests without leaving buttons disabled");
         await pane.ClearData();
         check(!pane.Connected && vault.Load<GmailCredentials>("credentials") is null && vault.Load<GmailCache>("cache") is null,"disconnect clears Gmail tokens, cache and native list");
         host.Children.Remove(pane);

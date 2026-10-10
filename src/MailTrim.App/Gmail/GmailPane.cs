@@ -136,6 +136,7 @@ public sealed class GmailPane : Grid, IDisposable
     public void SetActive(bool value)
     {
         active = value; Visibility = value ? Visibility.Visible : Visibility.Collapsed;
+        if (value && selected is not null && !HasDraft) Render(selected);
         if (value) _ = Execute(async () => { if (oauth.Connected) { await LoadFolders(); await Refresh(); } else ShowSetup(); });
         else { imageRender?.Cancel(); }
     }
