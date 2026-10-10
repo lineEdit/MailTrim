@@ -15,7 +15,7 @@ internal static class Program
     [STAThread]
     public static int Main(string[] args)
     {
-        if (args.Length != 1 && !(args.Length == 2 && args[1] is "--images-only" or "--gmail-only")) { Console.Error.WriteLine("Pass an empty scratch directory for test data; optionally --images-only."); return 2; }
+        if (args.Length != 1 && !(args.Length == 2 && args[1] is "--images-only" or "--gmail-only" or "--groups-only")) { Console.Error.WriteLine("Pass an empty scratch directory for test data; optionally --images-only, --gmail-only or --groups-only."); return 2; }
         var root = Path.GetFullPath(args[0]);
         if (Directory.Exists(root) && Directory.EnumerateFileSystemEntries(root).Any()) { Console.Error.WriteLine("Test directory must be empty."); return 2; }
         var result = 1;
@@ -67,6 +67,8 @@ internal static class Program
                 }
                 await GmailChecks.Run(store, host, Check);
                 if (args.Length == 2 && args[1] == "--gmail-only") { result = 0; return; }
+                if (args.Length == 1 || args[1] == "--groups-only") await GroupChecks.Run(store, host, window, Check);
+                if (args.Length == 2 && args[1] == "--groups-only") { result = 0; return; }
                 var paused = false;
                 var a = new BrowserSession(store, window, _ => { }, () => paused, _ => { });
                 var b = new BrowserSession(store, window, _ => { }, () => paused, _ => { });

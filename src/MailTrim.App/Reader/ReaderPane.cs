@@ -143,7 +143,7 @@ public sealed class ReaderPane : Grid
         <DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
          <StackPanel Margin="6">
           <TextBlock FontWeight="SemiBold" TextTrimming="CharacterEllipsis"><TextBlock.Text><MultiBinding StringFormat="{}{0} · {1}"><Binding Path="Sender"/><Binding Path="DateLabel"/></MultiBinding></TextBlock.Text></TextBlock>
-          <TextBlock Text="{Binding Subject}" TextWrapping="Wrap" MaxHeight="40" Margin="0,3,0,3"/>
+          <TextBlock Text="{Binding DisplaySubject}" TextWrapping="Wrap" MaxHeight="40" Margin="0,3,0,3"/>
           <TextBlock Text="{Binding Preview}" TextTrimming="CharacterEllipsis" Opacity="0.65"/>
          </StackPanel>
         </DataTemplate>
@@ -359,7 +359,8 @@ public sealed class ReaderPane : Grid
         _ = LiveLoop();
         if (session.ReaderState is { } position)
         {
-            folderUrl = ReaderSource.IsFolder(position.Folder) ? position.Folder : folderUrl;
+            foreach (var group in position.Letters.Where(x => x.IsGroup)) session.ReaderData.RememberGroup(group);
+            folderUrl = session.ReaderData.IsFolder(position.Folder) ? position.Folder : folderUrl;
             if (!folders.Items.Cast<ReaderFolder>().Any(x => x.Url == folderUrl)) folders.Items.Add(new ReaderFolder("Папка Mail.ru", folderUrl));
             SelectCurrentFolder();
             foreach (var item in position.Letters) AddLetter(item);
@@ -381,7 +382,7 @@ public sealed class ReaderPane : Grid
         try { saved = await Task.Run(session.Cache.List); }
         catch { notice.Text = "Не удалось открыть кэш. Проверьте доступ к локальной папке."; return; }
         if (lifetime.IsCancellationRequested) return;
-        foreach (var letter in saved) AddLetter(letter);
+        foreach (var letter in saved) { session.ReaderData.RememberGroup(letter); AddLetter(letter); }
         SchedulePreparation();
         if (saved.Count > 0) { notice.Text = $"В кэше: {saved.Count}. Проверяю новые входящие…"; BackgroundRefresh = RefreshOnEntry(); return; }
         await LoadList(true);
@@ -497,8 +498,9 @@ public sealed class ReaderPane : Grid
     private void CancelPreparation() { preparation?.Cancel(); }
     private void UpdatePreparationNotice()
     {
-        var count = letters.Take(80).Count(letter => session.ReaderData.Prepared.Get(letter) is not null);
-        preparationNotice.Text = $"Готово к чтению: {count}/{Math.Min(80, letters.Count)}" + (preparingMessage ? " · подготовка…" : "");
+        var messages = letters.Select(session.ReaderData.Describe).Where(x => !x.IsGroup).Take(80).ToArray();
+        var count = messages.Count(letter => session.ReaderData.Prepared.Get(letter) is not null);
+        preparationNotice.Text = $"Готово к чтению: {count}/{messages.Length}" + (preparingMessage ? " · подготовка…" : "");
         preparationNotice.ToolTip = "Готовые данные хранятся в памяти этого ящика. Через сайт заранее открываются только подтверждённо прочитанные письма. Непрочитанные и письма с неизвестным статусом не открываются.";
     }
     private void SchedulePreparation()
@@ -517,7 +519,7 @@ public sealed class ReaderPane : Grid
             request.Token.ThrowIfCancellationRequested(); UpdatePreparationNotice();
             // Give foreground selection priority. Never submit an entire batch to the source queue.
             await Task.Delay(500, request.Token);
-            foreach (var letter in rows.Where(x => x.Unread == false).Take(20))
+            foreach (var letter in rows.Select(session.ReaderData.Describe).Where(x => !x.IsGroup && x.Unread == false).Take(20))
             {
                 request.Token.ThrowIfCancellationRequested();
                 if (folder != folderUrl || !liveList || IsReplyVisible || openingOriginal || searchBox.Text.Length > 0) return;
@@ -625,9 +627,10 @@ public sealed class ReaderPane : Grid
         messageRead = request;
         if (remember && selectedLetter is { } previous && previous.Url != letter.Url) history.Push(previous);
         selectedLetter = letter;
+        letter = session.ReaderData.Describe(letter); selectedLetter = letter;
         var prepared = session.ReaderData.Prepared.Get(letter);
         List<ReaderBlock>? preview = prepared?.Blocks.ToList();
-        if (preview is null) { try { preview = session.Cache.Get(letter.Url); } catch { } }
+        if (preview is null && !letter.IsGroup) { try { preview = session.Cache.Get(letter.Url); } catch { } }
         if (prepared?.IsFresh(DateTimeOffset.UtcNow) == true)
         {
             Render(letter, prepared.Blocks.ToList()); notice.Text = "Готовое письмо · проверено " + prepared.VerifiedAt!.Value.LocalDateTime.ToString("HH:mm:ss");
@@ -636,7 +639,7 @@ public sealed class ReaderPane : Grid
         }
         readingMessage = true; loading = preview is null;
         if (preview is not null) { Render(letter, preview); notice.Text = "Сохранённая копия · проверяю письмо на сайте…"; }
-        else { body.Children.Clear(); AddText("Получаю письмо с Mail.ru…"); }
+        else { body.Children.Clear(); AddText(letter.IsGroup ? "Открываю группу писем…" : "Получаю письмо с Mail.ru…"); }
         if (preview is not null && searchBox.Text.Length > 0)
         { notice.Text = "Сохранённое письмо · результат поиска в кэше."; request.Dispose(); messageRead = null; readingMessage = false; return Task.CompletedTask; }
         BackgroundMessageRefresh = RefreshMessage(letter, generation, request, preview);
@@ -656,6 +659,22 @@ public sealed class ReaderPane : Grid
             session.ReaderData.Prepared.Put(document, DateTimeOffset.UtcNow); UpdatePreparationNotice();
             // Equal data leaves manually loaded images and reading position untouched.
             if (preview is null || !preview.SequenceEqual(blocks)) Render(selectedLetter, blocks);
+        }
+        catch (ReaderGroupOpened group)
+        {
+            if (!token.IsCancellationRequested && generation == readGeneration)
+            {
+                // The broker has confirmed a real list on the official page. Render its
+                // clean rows directly; no second navigation and no page HTML on screen.
+                folderUrl = group.Letter.Url; searchBox.Text = ""; scrollOffset = 0;
+                if (!folders.Items.Cast<ReaderFolder>().Any(x => x.Url == folderUrl))
+                    folders.Items.Add(new ReaderFolder(group.Letter.Sender.Length > 0 ? group.Letter.Sender : "Группа писем", folderUrl));
+                SelectCurrentFolder(); selectedLetter = null; history.Clear();
+                body.Children.Clear(); AddText("Выберите письмо из группы слева. «Входящие» вернёт к общему списку.");
+                MergeList(group.Letters.Select(session.ReaderData.Describe), true);
+                liveList = true; entryRefreshNeeded = false; nextReload = DateTimeOffset.UtcNow.AddSeconds(60);
+                notice.Text = $"Группа «{folderTitle.Text}» · писем: {letters.Count}";
+            }
         }
         catch (OperationCanceledException) { }
         catch { if (generation == readGeneration && !lifetime.IsCancellationRequested) { if (preview is null) { body.Children.Clear(); AddText("Не удалось прочитать письмо. Откройте оригинал."); } else notice.Text = "Не удалось проверить письмо · показана сохранённая копия."; } }

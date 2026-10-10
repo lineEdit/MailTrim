@@ -31,7 +31,7 @@ public sealed class MessageCache
         }
     }
     public static ReaderLetter MergeMetadata(ReaderLetter old, ReaderLetter fresh) =>
-        ReaderChronology.DateKey(fresh) is null
+        fresh.IsGroup || old.IsGroup ? fresh with { IsGroup = true } : ReaderChronology.DateKey(fresh) is null
             ? fresh with { Date = old.Date, DateHint = old.DateHint, ReceivedAt = old.ReceivedAt, CapturedAt = old.CapturedAt }
             : old.ReceivedAt is not null && fresh.ReceivedAt is null ? fresh with { ReceivedAt = old.ReceivedAt } : fresh;
     private long StoredBytesExcept(string path) => Directory.EnumerateFiles(directory)
@@ -138,7 +138,7 @@ public sealed class MessageCache
     }
     public void Save(ReaderLetter letter, List<ReaderBlock> blocks)
     {
-        if (!NavigationPolicy.IsMail(letter.Url) || blocks.Count == 0) return;
+        if (!NavigationPolicy.IsMail(letter.Url) || letter.IsGroup || blocks.Count == 0) return;
         lock (gate)
         {
             Directory.CreateDirectory(directory);

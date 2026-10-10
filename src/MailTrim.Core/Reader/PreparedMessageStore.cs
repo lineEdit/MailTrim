@@ -15,7 +15,7 @@ public sealed class PreparedMessageStore
     public int Count => items.Count;
     public PreparedMessage? Get(ReaderLetter letter)
     {
-        if (!items.TryGetValue(letter.Url, out var item)) return null;
+        if (letter.IsGroup || !items.TryGetValue(letter.Url, out var item)) return null;
         var data = item.Data;
         // Changed website metadata makes a prepared body a preview until revalidated.
         if (!SameContent(data.Letter, letter)) data = data with { VerifiedAt = null };
@@ -25,7 +25,7 @@ public sealed class PreparedMessageStore
     }
     public PreparedMessage? Put(ReaderDocument document, DateTimeOffset now)
     {
-        if (ReaderData.Clean(document.Letter) is not { } letter) return null;
+        if (ReaderData.Clean(document.Letter) is not { IsGroup: false } letter) return null;
         var blocks = ReaderData.Clean(document.Blocks).AsReadOnly();
         if (blocks.Count == 0 || blocks.Sum(b => b.Text.Length + b.Image.Length) > maxCharacters) return null;
         if (document.Cached && Get(letter) is { VerifiedAt: not null } current) return current;

@@ -27,12 +27,24 @@ public sealed class ReaderSource(BrowserSession session)
     public async Task<List<ReaderBlock>> Read(ReaderLetter letter, CancellationToken token)
     {
         await Navigate(letter.Url, token);
+        string? groupSignature = null; int stableGroup = 0;
         for (var i = 0; i < 100; i++)
         {
             token.ThrowIfCancellationRequested();
             if (!NavigationPolicy.IsMail(session.View.CoreWebView2.Source)) throw new IOException("sign_in_required");
             var blocks = await Extract<List<ReaderBlock>>(ReaderScript.Body);
             if (blocks?.Count > 0) return ReaderData.Clean(blocks);
+            var group = await Extract<ReaderListSnapshot>(ReaderScript.GroupSnapshot);
+            if (group is { Ready: true } && group.Letters.All(x => x.Url != letter.Url))
+            {
+                var signature = string.Join('\n', group.Letters.Select(x => x.Url));
+                stableGroup = signature == groupSignature ? stableGroup + 1 : 1; groupSignature = signature;
+                // Avoid mistaking an intermediate SPA render for the final category.
+                // An empty loading shell alone does not prove an empty category.
+                if (stableGroup >= 6 && (group.Letters.Count > 0 || i >= 15 && (letter.IsGroup || group.Empty || IsFolder(letter.Url))))
+                    throw new ReaderGroupOpened(letter, group.Letters.Select(ReaderData.Clean).OfType<ReaderLetter>().ToList());
+            }
+            else { stableGroup = 0; groupSignature = null; }
             await Task.Delay(150, token);
         }
         throw new IOException("message_not_ready");
@@ -83,6 +95,7 @@ public sealed class ReaderSource(BrowserSession session)
         void AddFolder(string url) { if (NavigationPolicy.IsMail(url) && seenFolders.Add(url.TrimEnd('/'))) folders.Enqueue(url); }
         foreach (var name in new[] { "inbox", "sent", "archive", "drafts", "spam", "trash" }) AddFolder("https://e.mail.ru/" + name + "/");
         var messages = new Dictionary<string, ReaderLetter>();
+        var knownGroups = (await Task.Run(session.Cache.List, token)).Where(x => x.IsGroup).Select(x => x.Url).ToHashSet(StringComparer.Ordinal);
         int scanned = 0, uncertain = 0, saved = 0, failed = 0, completed = 0;
         var draftUrls = new HashSet<string>(StringComparer.Ordinal);
         void Report(MailboxCacheProgress state) { progress(state.Description); detail?.Invoke(state); }
@@ -99,7 +112,7 @@ public sealed class ReaderSource(BrowserSession session)
                 foreach (var extra in await Extract<List<string>>(Folders) ?? []) AddFolder(extra);
                 var rows = await Extract<List<ReaderLetter>>(ReaderScript.List) ?? [];
                 token.ThrowIfCancellationRequested();
-                var cleanRows = rows.Select(ReaderData.Clean).OfType<ReaderLetter>().ToArray();
+                var cleanRows = rows.Select(ReaderData.Clean).OfType<ReaderLetter>().Select(x => knownGroups.Contains(x.Url) ? x with { IsGroup = true } : x).ToArray();
                 bool headersChanged = false;
                 foreach (var row in cleanRows)
                 {
@@ -116,7 +129,7 @@ public sealed class ReaderSource(BrowserSession session)
             }
             if (!reachedEnd) uncertain++;
         }
-        var eligible = messages.Values.Where(x => !onlyRead || x.Unread == false && !draftUrls.Contains(x.Url)).ToArray();
+        var eligible = messages.Values.Where(x => !x.IsGroup && (!onlyRead || x.Unread == false && !draftUrls.Contains(x.Url))).ToArray();
         var skipped = messages.Count - eligible.Length;
         MailboxCacheProgress Saving(CacheStage stage = CacheStage.Saving) => new(stage, scanned, seenFolders.Count, messages.Count,
             eligible.Length, completed, saved, failed, skipped, uncertain, DiscoveryComplete: true);
@@ -131,6 +144,12 @@ public sealed class ReaderSource(BrowserSession session)
                 token.ThrowIfCancellationRequested();
                 await Task.Run(() => session.Cache.Save(letter, blocks), token); saved++;
             }
+            catch (ReaderGroupOpened group)
+            {
+                // A list is not a failed or cached message. Never open its unread children.
+                await Task.Run(() => session.Cache.SaveHeaders([group.Letter with { IsGroup = true }], token), token);
+                skipped++;
+            }
             catch (OperationCanceledException) { throw; }
             catch (IOException ex) when (ex.Message is "cache_size_limit" or "sign_in_required") { throw; }
             catch { failed++; }
@@ -140,4 +159,10 @@ public sealed class ReaderSource(BrowserSession session)
         Report(Saving(CacheStage.Complete));
         return new(saved, failed, scanned, uncertain, skipped);
     }
+}
+
+public sealed class ReaderGroupOpened(ReaderLetter letter, List<ReaderLetter> letters) : IOException("message_group_opened")
+{
+    public ReaderLetter Letter { get; } = letter;
+    public List<ReaderLetter> Letters { get; } = letters;
 }

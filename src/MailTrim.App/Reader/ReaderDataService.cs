@@ -13,9 +13,29 @@ public sealed class ReaderDataService : IDisposable
     private readonly CancellationTokenSource lifetime = new();
     private readonly Task worker;
     public PreparedMessageStore Prepared { get; } = new();
+    private readonly Dictionary<string, ReaderFolder> groups = new(StringComparer.Ordinal);
+    public bool IsFolder(string url) => ReaderSource.IsFolder(url) || groups.ContainsKey(url);
+    public ReaderLetter Describe(ReaderLetter letter) => groups.ContainsKey(letter.Url) ? letter with { IsGroup = true } : letter;
+    public void RememberGroup(ReaderLetter letter)
+    {
+        if (letter.IsGroup && NavigationPolicy.IsMail(letter.Url)) groups[letter.Url] = new(letter.Sender.Length > 0 ? letter.Sender : "Группа писем", letter.Url);
+    }
+    private async Task<List<ReaderBlock>> ReadSource(ReaderLetter letter, CancellationToken token)
+    {
+        try { return await source.Read(letter, token); }
+        catch (ReaderGroupOpened group)
+        {
+            token.ThrowIfCancellationRequested();
+            var header = group.Letter with { IsGroup = true }; RememberGroup(header);
+            Prepared.Invalidate([header]);
+            try { await Task.Run(() => session.Cache.SaveHeaders([header, .. group.Letters], token), token); }
+            catch (Exception ex) when (ex is IOException or System.Security.Cryptography.CryptographicException or UnauthorizedAccessException) { }
+            throw;
+        }
+    }
     public async Task HydratePrepared(IEnumerable<ReaderLetter> letters, CancellationToken token)
     {
-        var rows = letters.Take(80).Where(x => Prepared.Get(x) is null).ToArray();
+        var rows = letters.Take(80).Where(x => !x.IsGroup && Prepared.Get(x) is null).ToArray();
         foreach (var group in rows.Chunk(8))
         {
             var documents = await Task.Run(() =>
@@ -58,7 +78,7 @@ public sealed class ReaderDataService : IDisposable
     public Task<List<ReaderLetter>> LoadList(bool refresh, bool more, int offset, CancellationToken token) => LoadFolder(refresh, more, offset, "https://e.mail.ru/inbox/", token);
     public Task<List<ReaderLetter>> LoadFolder(bool refresh, bool more, int offset, string folder, CancellationToken token) => Enqueue(async ct =>
     {
-        if (!ReaderSource.IsFolder(folder)) throw new IOException("folder_required");
+        if (!IsFolder(folder)) throw new IOException("folder_required");
         if (refresh || more && (await source.Extract<List<ReaderLetter>>(ReaderScript.List))?.Count is not > 0)
             await source.Navigate(folder, ct);
         if (more) await session.View.CoreWebView2.ExecuteScriptAsync($"document.querySelector('.ReactVirtualized__List')?.scrollTo(0,{offset})");
@@ -70,7 +90,7 @@ public sealed class ReaderDataService : IDisposable
             var rows = snapshot?.Letters;
             if (rows?.Count > 0 || snapshot?.Ready == true && ++emptyReady >= 3)
             {
-                var clean = (rows ?? []).Select(ReaderData.Clean).OfType<ReaderLetter>().ToList();
+                var clean = (rows ?? []).Select(ReaderData.Clean).OfType<ReaderLetter>().Select(Describe).ToList();
                 foreach (var letter in clean) session.Cache.RefreshMetadata(letter);
                 ct.ThrowIfCancellationRequested();
                 try { await Task.Run(() => session.Cache.SaveHeaders(clean, ct), ct); }
@@ -86,9 +106,9 @@ public sealed class ReaderDataService : IDisposable
     {
         ct.ThrowIfCancellationRequested();
         var uri = new Uri(session.View.CoreWebView2.Source);
-        if (!NavigationPolicy.IsMail(uri.AbsoluteUri) || uri.GetLeftPart(UriPartial.Path).TrimEnd('/') != folder.TrimEnd('/')) return null;
+        if (!NavigationPolicy.IsMail(uri.AbsoluteUri) || uri.GetLeftPart(UriPartial.Query).TrimEnd('/') != folder.TrimEnd('/')) return null;
         var snapshot = await source.Extract<ReaderListSnapshot>(ReaderScript.Snapshot);
-        return snapshot is { Ready: true } ? snapshot with { Letters = (snapshot.Letters ?? []).Select(ReaderData.Clean).OfType<ReaderLetter>().ToList() } : null;
+        return snapshot is { Ready: true } ? snapshot with { Letters = (snapshot.Letters ?? []).Select(ReaderData.Clean).OfType<ReaderLetter>().Select(Describe).ToList() } : null;
     }, token);
     public Task<List<string>> Folders(CancellationToken token) => Enqueue(async ct =>
     {
@@ -101,14 +121,14 @@ public sealed class ReaderDataService : IDisposable
         return (await source.Extract<List<ReaderFolder>>(ReaderSource.FolderDetails) ?? [])
             .Where(x => x is not null && ReaderSource.IsFolder(x.Url)).DistinctBy(x => x.Url.TrimEnd('/')).Take(100)
             .Select(x => x with { Name = string.Concat((x.Name ?? "").Where(c => !char.IsControl(c))).Trim() })
-            .ToList();
+            .Concat(groups.Values).DistinctBy(x => x.Url).ToList();
     }, token);
     public Task<ReaderDocument> ReadFresh(ReaderLetter letter, CancellationToken token) => Enqueue(async ct =>
     {
-        letter = ReaderData.Clean(letter) ?? throw new IOException("mail_origin_required");
+        letter = Describe(ReaderData.Clean(letter) ?? throw new IOException("mail_origin_required"));
         try
         {
-            var blocks = ReaderData.Clean(await source.Read(letter, ct));
+            var blocks = ReaderData.Clean(await ReadSource(letter, ct));
             ct.ThrowIfCancellationRequested(); bool saved = true;
             try { session.Cache.Save(letter, blocks); }
             catch (Exception ex) when (ex is IOException or System.Security.Cryptography.CryptographicException or UnauthorizedAccessException) { saved = false; }
@@ -116,7 +136,7 @@ public sealed class ReaderDataService : IDisposable
             Prepared.Put(document, DateTimeOffset.UtcNow);
             return document;
         }
-        catch (IOException) when (!ct.IsCancellationRequested && session.Cache.Get(letter.Url) is not null)
+        catch (IOException ex) when (ex is not ReaderGroupOpened && !ct.IsCancellationRequested && session.Cache.Get(letter.Url) is not null)
         {
             return new ReaderDocument(letter, ReaderData.Clean(session.Cache.Get(letter.Url)).AsReadOnly(), true, true);
         }
@@ -124,15 +144,15 @@ public sealed class ReaderDataService : IDisposable
     public Task<ReaderDocument> Read(ReaderLetter letter, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        letter = ReaderData.Clean(letter) ?? throw new IOException("mail_origin_required");
-        if (session.Cache.Get(letter.Url) is { } cached)
+        letter = Describe(ReaderData.Clean(letter) ?? throw new IOException("mail_origin_required"));
+        if (!Describe(letter).IsGroup && session.Cache.Get(letter.Url) is { } cached)
         {
             session.Cache.RefreshMetadata(letter);
             return Task.FromResult(new ReaderDocument(letter, ReaderData.Clean(cached).AsReadOnly(), true, true));
         }
         return Enqueue(async ct =>
         {
-            var blocks = ReaderData.Clean(await source.Read(letter, ct));
+            var blocks = ReaderData.Clean(await ReadSource(letter, ct));
             ct.ThrowIfCancellationRequested(); bool saved = true;
             try { session.Cache.Save(letter, blocks); }
             catch (Exception ex) when (ex is IOException or System.Security.Cryptography.CryptographicException or UnauthorizedAccessException) { saved = false; }
@@ -141,7 +161,8 @@ public sealed class ReaderDataService : IDisposable
     }
     public Task<string?> PerformAction(ReaderLetter letter, ReaderAction action, CancellationToken token) => Enqueue(async ct =>
     {
-        await source.Read(letter, ct); ct.ThrowIfCancellationRequested();
+        if (Describe(letter).IsGroup) throw new IOException("message_required");
+        await ReadSource(letter, ct); ct.ThrowIfCancellationRequested();
         return await source.Extract<string>(ReaderActionScript.Create(action, letter.Url));
     }, token);
     public Task WaitForIdle(CancellationToken token) => Enqueue(_ => Task.FromResult(true), token);

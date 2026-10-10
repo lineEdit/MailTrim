@@ -61,14 +61,19 @@ public static class ReaderScript
     """;
 
     public static string Snapshot => "(() => { const letters = " + List + "; return { ready: location.origin === 'https://e.mail.ru' && (letters.length > 0 || !!document.querySelector('.letter-list__react, .letter-list, .llct')), letters }; })()";
+
+    // A category opens another list, not a message body. Inspect the destination DOM,
+    // rather than guessing from sender names (a real sender may be called «Чеки»).
+    public static string GroupSnapshot => "(() => { const letters = " + List + "; return { ready: location.origin === 'https://e.mail.ru' && !!document.querySelector('.letter-list__react, .letter-list, .llct') && !document.querySelector('.letter-body, .letter-body__body, .letter-body__body-content'), empty: !!document.querySelector('.letter-list__empty, .llct__empty, [data-testid=empty-folder], [data-testid=empty-list]'), letters }; })()";
 }
 
-public sealed record ReaderListSnapshot(bool Ready, List<ReaderLetter> Letters);
+public sealed record ReaderListSnapshot(bool Ready, List<ReaderLetter> Letters, bool Empty = false);
 
 public sealed record ReaderLetter(string Url, string Sender, string Subject, string Preview, string Date,
-    DateTimeOffset? ReceivedAt = null, DateTimeOffset? CapturedAt = null, string DateHint = "", bool? Unread = null)
+    DateTimeOffset? ReceivedAt = null, DateTimeOffset? CapturedAt = null, string DateHint = "", bool? Unread = null, bool IsGroup = false)
 {
     [System.Text.Json.Serialization.JsonIgnore] public string DateLabel => ReaderChronology.DateKey(this) is null ? Date + " · дата не уточнена" : Date;
+    [System.Text.Json.Serialization.JsonIgnore] public string DisplaySubject => IsGroup ? "Группа писем ›" : Subject;
 }
 public sealed record ReaderBlock(string Text, string Image);
 
