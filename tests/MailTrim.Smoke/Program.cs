@@ -710,13 +710,21 @@ internal static class Program
                 var profiles = (ListBox)shell.FindName("Profiles");
                 var readerHost = (Grid)shell.FindName("ReaderHost");
                 var toggleReader = (Button)shell.FindName("ReaderButton");
+                var originalSettings = (Button)shell.FindName("SettingsButton");
+                var settingsOpenedDirectly = false;
+                _ = shell.Dispatcher.BeginInvoke(new Action(() => {
+                    var dialog = shell.OwnedWindows.OfType<SettingsWindow>().SingleOrDefault();
+                    settingsOpenedDirectly = dialog is { IsVisible: true }; dialog?.Close();
+                }));
+                originalSettings.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Check(originalSettings.IsVisible && originalSettings.IsEnabled && settingsOpenedDirectly && readerHost.Visibility == Visibility.Collapsed, "original mode opens settings directly from its visible toolbar button without changing mode");
                 toggleReader.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 for (int i = 0; i < 100 && (readerHost.Children.Count == 0 || ((DockPanel)((ReaderPane)readerHost.Children[0]).Children[0]).Children.OfType<ListBox>().Single().Items.Count == 0); i++) await Task.Delay(50);
                 foreach (var index in new[] { 1, 0 })
                 {
                     profiles.SelectedIndex = index;
                     for (int i = 0; i < 100 && !shell.IsEnabled; i++) await Task.Delay(50);
-                    Check(browserHost.Visibility == Visibility.Hidden && readerHost.Visibility == Visibility.Visible && readerHost.Children.Count == 1 && toggleReader.Content.ToString() == "Оригинал", "reader mode survives switching account tab");
+                    Check(browserHost.Visibility == Visibility.Hidden && readerHost.Visibility == Visibility.Visible && readerHost.Children.Count == 1 && toggleReader.Content.ToString() == "Оригинал" && originalSettings.Visibility == Visibility.Collapsed, "reader mode survives switching account tab without duplicating toolbar settings");
                     var activeList = ((DockPanel)((ReaderPane)readerHost.Children[0]).Children[0]).Children.OfType<ListBox>().Single();
                     Check(activeList.Items.Cast<ReaderLetter>().Single().Sender == store.Settings.Profiles[index].Name, "switched reader shows only selected account cache");
                 }
@@ -774,7 +782,7 @@ internal static class Program
                 allowReplyExit = true;
                 ((Button)shell.FindName("ReloadButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 for (int i = 0; i < 100 && guardedNavigations == 0; i++) await Task.Delay(25);
-                Check(replyExitPrompts == 5 && guardedNavigations > 0 && readerHost.Visibility == Visibility.Collapsed, "confirmed reload leaves reply and navigates");
+                Check(replyExitPrompts == 5 && guardedNavigations > 0 && readerHost.Visibility == Visibility.Collapsed && originalSettings.IsVisible, "confirmed reload leaves reply, navigates and restores original toolbar settings");
                 toggleReader.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 for (int i = 0; i < 100 && readerHost.Children.Count == 0; i++) await Task.Delay(25);
                 Check(!((ReaderPane)readerHost.Children[0]).IsReplyVisible, "confirmed navigation clears obsolete reply state");

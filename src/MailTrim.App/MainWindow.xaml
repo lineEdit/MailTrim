@@ -45,6 +45,15 @@
      <Button x:Name="ReloadButton" Content="↻" Width="34" Height="32" Padding="0" FontSize="18" ToolTip="Обновить (F5)" AutomationProperties.Name="Обновить" Click="Reload_Click"/>
      <Button x:Name="HomeButton" Content="Входящие" Height="32" Padding="10,0" Click="Home_Click"/>
      <Button x:Name="PauseButton" Content="Фильтры: вкл" Height="32" Padding="10,0" ToolTip="Приостановить фильтры" Click="Pause_Click"/>
+     <Button x:Name="SettingsButton" Content="&#xE713;" FontFamily="Segoe MDL2 Assets" Width="34" Height="32" Padding="0" FontSize="18" ToolTip="Настройки MailTrim" AutomationProperties.Name="Настройки MailTrim" Click="Settings_Click">
+      <Button.Style>
+       <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+        <Style.Triggers>
+         <DataTrigger Binding="{Binding Visibility, ElementName=ReaderHost}" Value="Visible"><Setter Property="Visibility" Value="Collapsed"/></DataTrigger>
+        </Style.Triggers>
+       </Style>
+      </Button.Style>
+     </Button>
     </StackPanel>
    </Grid>
   </Border>
