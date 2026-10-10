@@ -15,3 +15,8 @@ artifacts/
 /settings.json
 /rules.json
 .env*
+
+# Personal Google Desktop OAuth downloads and encrypted runtime files
+**/client_secret_*.json
+**/credentials.bin
+**/Gmail/*/cache.bin

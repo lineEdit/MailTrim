@@ -32,7 +32,7 @@ public sealed class MailMonitor(LocalStore store, Grid host, Action<int> notify,
         cancellation = new CancellationTokenSource(); var token = cancellation.Token;
         try
         {
-            foreach (var profile in store.Settings.Profiles.ToArray())
+            foreach (var profile in store.Settings.Profiles.Where(p => p.Provider == MailProvider.MailRu).ToArray())
             {
                 token.ThrowIfCancellationRequested();
                 status(profile.Id, new("Проверка…", null, null));

@@ -57,6 +57,7 @@ public sealed class SettingsWindow : Window
         desktopPanel.Children.Add(startup); desktopPanel.Children.Add(tray); desktopPanel.Children.Add(notifications);
         desktopPanel.Children.Add(siteNotifications);
         desktopPanel.Children.Add(Note("По умолчанию новые письма проверяются раз в 2 минуты. В режиме сайта разрешены браузерные уведомления только от e.mail.ru; оповещения от опроса отключены, чтобы не дублировать их. В уведомлении сайта могут быть отправитель и тема письма."));
+        desktopPanel.Children.Add(Note("Gmail проверяется через API каждые 2 минуты. Режим уведомлений сайта относится только к Mail.ru; счётчик и уведомления Gmail от него не зависят."));
         desktopPanel.Children.Add(Note("Для режима сайта откройте вкладку каждого нужного ящика и включите уведомления в настройках самой почты, если они отключены. После смены режима обновите страницу. Приложение должно оставаться запущенным, в том числе в трее. Если сайт не присылает уведомления, вернитесь к обычной проверке."));
         desktopPanel.Children.Add(Note("Значок рядом с часами: двойной щелчок открывает окно, «Выйти» полностью закрывает приложение. Автозапуск привязан к текущему расположению EXE; после переноса приложения включите его заново."));
         desktopPanel.Children.Add(Note("Проверяются входящие через отдельную веб-сессию того же профиля, без открытия писем. Первый успешный опрос задаёт исходный список и не уведомляет о старой почте. Нужны интернет и действующий вход Mail.ru/VK ID. Оповещения от опроса не содержат текстов писем; Windows может скрывать их в режиме «Не беспокоить»."));
@@ -74,8 +75,9 @@ public sealed class SettingsWindow : Window
         cachePanel.Children.Add(Note("Автоматически открываются только письма с явным признаком «прочитано». Непрочитанные, письма с неизвестным статусом и тела черновиков пропускаются; их заголовки сохраняются для поиска. Новые непрочитанные письма сохраняются после вашего открытия. Картинки и вложения автоматически не сохраняются в кэш; скрытая страница сайта может загружать картинки."));
         cachePanel.Children.Add(automaticImages);
         cachePanel.Children.Add(Note("По умолчанию картинки открываются по нажатию. При включении до 12 картинок выбранного письма загружаются автоматически, по две одновременно; остальные — по нажатию. Текст показывается сразу. Запросы идут без cookies, но сервер картинки может узнать о просмотре. Настройка применяется при следующем открытии письма."));
-        cachePanel.Children.Add(Label("Загрузка по ящикам"));
-        var cacheProfile = new ComboBox { ItemsSource = store.Settings.Profiles, DisplayMemberPath = "Name", SelectedValuePath = "Id", SelectedValue = store.Settings.ActiveProfile, MinWidth = 220, HorizontalAlignment = HorizontalAlignment.Left };
+        cachePanel.Children.Add(Note("Gmail: эта настройка подготавливает до 8 уже прочитанных писем загруженной страницы через API. Его кэш ограничен 100 телами и 40 первыми страницами папок; полная резервная копия не создаётся. Подключение и очистка Gmail доступны в его собственной панели."));
+        cachePanel.Children.Add(Label("Загрузка по ящикам Mail.ru"));
+        var cacheProfile = new ComboBox { ItemsSource = store.Settings.Profiles.Where(p => p.Provider == MailProvider.MailRu).ToArray(), DisplayMemberPath = "Name", SelectedValuePath = "Id", SelectedValue = store.Settings.ActiveProfile, MinWidth = 220, HorizontalAlignment = HorizontalAlignment.Left };
         if (cacheProfile.SelectedIndex < 0 && cacheProfile.Items.Count > 0) cacheProfile.SelectedIndex = 0;
         cachePanel.Children.Add(cacheProfile);
         var cacheState = Note(""); cacheState.Name = "MailboxCacheStatus"; cachePanel.Children.Add(cacheState);

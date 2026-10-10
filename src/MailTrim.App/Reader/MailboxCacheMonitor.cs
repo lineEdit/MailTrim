@@ -42,7 +42,7 @@ public sealed class MailboxCacheMonitor(LocalStore store, Window owner, Grid hos
         using var stop = new CancellationTokenSource(); cancellation = stop;
         try
         {
-            foreach (var profile in store.Settings.Profiles.ToArray())
+            foreach (var profile in store.Settings.Profiles.Where(p => p.Provider == MailProvider.MailRu).ToArray())
             {
                 stop.Token.ThrowIfCancellationRequested();
                 if (!store.Settings.AutomaticMailboxCache || !canRun()) return;

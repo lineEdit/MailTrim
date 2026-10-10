@@ -38,7 +38,7 @@ public sealed class LocalStore
         Settings = File.Exists(settingsPath)
             ? JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(settingsPath), FilterRules.Json) ?? throw new FormatException("Settings")
             : new AppSettings();
-        if (Settings.Profiles is null || Settings.Profiles.Count > 30 || Settings.Profiles.Any(p => p is null || p.Id == Guid.Empty || string.IsNullOrWhiteSpace(p.Name) || p.Name.Length > 60) || Settings.Profiles.Select(p => p.Id).Distinct().Count() != Settings.Profiles.Count)
+        if (Settings.Profiles is null || Settings.Profiles.Count > 30 || Settings.Profiles.Any(p => p is null || p.Id == Guid.Empty || string.IsNullOrWhiteSpace(p.Name) || p.Name.Length > 60 || !Enum.IsDefined(p.Provider)) || Settings.Profiles.Select(p => p.Id).Distinct().Count() != Settings.Profiles.Count)
             throw new FormatException("Profiles");
         if (Settings.Theme is not ("Light" or "Dark" or "System")) Settings.Theme = "System";
         if (!File.Exists(RulesPath)) AtomicWrite(RulesPath, DefaultRules);

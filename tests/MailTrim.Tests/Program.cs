@@ -240,6 +240,9 @@ try
 finally { Directory.Delete(updateScratch, true); }
 Console.WriteLine($"{passed} total checks passed.");
 
+await GmailChecks.Run(Check);
+Console.WriteLine($"{passed} checks including Gmail passed.");
+
 sealed class FeedHandler(Func<int, HttpResponseMessage> response) : HttpMessageHandler
 {
     public int Calls { get; private set; }

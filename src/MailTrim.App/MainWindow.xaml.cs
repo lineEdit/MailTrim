@@ -11,6 +11,8 @@ public partial class MainWindow : Window
 {
     private readonly LocalStore store;
     private readonly Dictionary<Guid, BrowserSession> sessions = [];
+    private readonly Dictionary<Guid, GmailPane> gmail = [];
+    private GmailPane? CurrentGmail => Profiles.SelectedItem is AccountProfile p ? gmail.GetValueOrDefault(p.Id) : null;
     private ReaderPane? reader;
     private bool readerMode;
     private DesktopIntegration? desktop;
@@ -47,8 +49,8 @@ public partial class MainWindow : Window
     internal void AllowConfirmedShutdown() => confirmedShutdown = true;
     private bool ConfirmReplyExit(bool allProfiles = false)
     {
-        var count = allProfiles ? sessions.Values.Count(s => s.ReaderReplyOpen) : Current?.ReaderReplyOpen == true ? 1 : 0;
-        return count == 0 || confirmReplyExit($"Открыта панель ответа (ящиков: {count}). Приложение не проверяет, сохранён ли черновик в Mail.ru.\n\nСначала отправьте письмо или сохраните черновик. Продолжить и покинуть страницу?");
+        var count = allProfiles ? sessions.Values.Count(s => s.ReaderReplyOpen) + gmail.Values.Count(s => s.HasDraft) : Current?.ReaderReplyOpen == true || CurrentGmail?.HasDraft == true ? 1 : 0;
+        return count == 0 || confirmReplyExit($"Открыта панель ответа (ящиков: {count}). Черновик Gmail хранится в открытом окне, а сохранение черновика Mail.ru проверяется на сайте.\n\nСначала отправьте письмо или сохраните черновик. Продолжить и покинуть страницу?");
     }
     private void NavigateFromReader(Action<BrowserSession> navigate, bool refreshReader = false)
     {
@@ -72,11 +74,12 @@ public partial class MainWindow : Window
         Loaded += async (_, _) =>
         {
             RefreshProfiles(store.Settings.ActiveProfile);
+            foreach (var p in store.Settings.Profiles.Where(p => p.Provider == MailProvider.Gmail)) EnsureGmail(p);
             if (store.RulesRecovered) MessageBox.Show(this, "Локальные правила повреждены. Временно используются встроенные. Исправьте или сбросьте их в настройках.", "Правила");
             if (store.RulesUpgradeAvailable) MessageBox.Show(this, "Доступны новые фильтры рекламы. Ваш изменённый набор сохранён. Чтобы использовать новый набор: Настройки → Правила → Встроенные правила → Сохранить и перезагрузить. Это заменит ваши изменения правил.", "Обновление фильтров");
             if (store.Settings.CheckUpdatesOnStartup) await UpdateChecker.Check(this, store, true);
         };
-        Closed += (_, _) => { visibleStatusTimer.Stop(); monitor?.Dispose(); mailboxCache?.Dispose(); desktop?.Dispose(); desktop = null; CloseReader(); foreach (var session in sessions.Values) session.Dispose(); store.Log("app_closed"); };
+        Closed += (_, _) => { visibleStatusTimer.Stop(); monitor?.Dispose(); mailboxCache?.Dispose(); desktop?.Dispose(); desktop = null; CloseReader(); foreach (var session in sessions.Values) session.Dispose(); foreach (var pane in gmail.Values) pane.Dispose(); store.Log("app_closed"); };
         Closing += (_, e) =>
         {
             if (confirmedShutdown || desktop?.SystemEnding == true) return;
@@ -97,6 +100,11 @@ public partial class MainWindow : Window
             { reader.FocusSearch(); e.Handled = true; return; }
             if (reader is not null && Keyboard.Modifiers == ModifierKeys.None && e.Key == Key.Escape)
             { e.Handled = true; await reader.ResetSearch(); return; }
+            if (CurrentGmail is { } g)
+            {
+                if (e.Key == Key.F5) { g.RequestRefresh(); e.Handled = true; return; }
+                if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.F) { g.FocusSearch(); e.Handled = true; return; }
+            }
             if (e.Key == Key.F5) { e.Handled = true; NavigateFromReader(s => s.View.Reload(), true); }
             if (e.SystemKey == Key.Left && (reader is not null || Current?.View.CanGoBack == true)) { e.Handled = true; NavigateFromReader(s => s.View.GoBack()); }
         };
@@ -111,6 +119,7 @@ public partial class MainWindow : Window
             mailboxCache = new MailboxCacheMonitor(store, this, backgroundHost, () => !busy);
             mailboxCache.Start();
             desktop.CheckRequested += monitor.RequestCheck;
+            desktop.CheckRequested += () => { foreach (var pane in gmail.Values) pane.RequestCheck(); };
             desktop.UpdateCounts(store.Settings.Profiles);
             visibleStatusTimer.Tick += async (_, _) => await RefreshVisibleMailboxStatus();
             visibleStatusTimer.Start();
@@ -172,14 +181,29 @@ public partial class MainWindow : Window
         Profiles.ItemsSource = store.Settings.Profiles;
         Profiles.SelectedItem = store.Settings.Profiles.FirstOrDefault(p => p.Id == selected) ?? store.Settings.Profiles.FirstOrDefault();
     }
+    private GmailPane EnsureGmail(AccountProfile profile)
+    {
+        if (gmail.TryGetValue(profile.Id, out var existing)) return existing;
+        var pane = new GmailPane(store, profile, UpdateMailboxStatus, n => desktop?.Notify(n));
+        gmail.Add(profile.Id, pane); GmailHost.Children.Add(pane); pane.SetActive(false); return pane;
+    }
     private async Task ShowProfile()
     {
         var keepReaderMode = readerMode;
         ResetReader(keepReaderMode);
+        foreach (var pane in gmail.Values) pane.SetActive(false);
+        GmailHost.Visibility = Visibility.Collapsed;
+        ReaderButton.Visibility = PauseButton.Visibility = BackButton.Visibility = Visibility.Visible;
         foreach (var s in sessions.Values) s.SetActive(false);
         EmptyLabel.Visibility = Profiles.SelectedItem is AccountProfile ? Visibility.Collapsed : Visibility.Visible;
         if (Profiles.SelectedItem is not AccountProfile profile) return;
         store.Settings.ActiveProfile = profile.Id; store.Save();
+        if (profile.Provider == MailProvider.Gmail)
+        {
+            ReaderHost.Visibility = Visibility.Collapsed; BrowserHost.Visibility = Visibility.Hidden; GmailHost.Visibility = Visibility.Visible;
+            ReaderButton.Visibility = PauseButton.Visibility = BackButton.Visibility = Visibility.Collapsed;
+            EnsureGmail(profile).SetActive(true); ConnectionStatus.Text = profile.StatusText; Status.Text = "Gmail · официальный API"; return;
+        }
         if (!sessions.TryGetValue(profile.Id, out var session))
         {
             session = new BrowserSession(store, this, text => { if (Profiles.SelectedItem is AccountProfile p && p.Id == profile.Id) Status.Text = text; }, () => paused);
@@ -196,15 +220,16 @@ public partial class MainWindow : Window
     private void ProfileActions_Click(object sender, RoutedEventArgs e)
     {
         RenameMenu.IsEnabled = Profiles.SelectedItem is AccountProfile;
-        ClearMenu.IsEnabled = RemoveMenu.IsEnabled = Current is not null;
+        ClearMenu.IsEnabled = RemoveMenu.IsEnabled = Current is not null || CurrentGmail is not null;
         ProfileActionsButton.ContextMenu.PlacementTarget = ProfileActionsButton;
         ProfileActionsButton.ContextMenu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
         ProfileActionsButton.ContextMenu.IsOpen = true;
     }
     private void Back_Click(object sender, RoutedEventArgs e) { if ((reader is not null || Current?.View.CanGoBack == true)) NavigateFromReader(s => s.View.GoBack()); }
-    private void Reload_Click(object sender, RoutedEventArgs e) { if (Current is not null) NavigateFromReader(s => s.View.Reload(), true); else _ = Run(ShowProfile); }
+    private void Reload_Click(object sender, RoutedEventArgs e) { if (CurrentGmail is { } g) { g.RequestRefresh(); return; } if (Current is not null) NavigateFromReader(s => s.View.Reload(), true); else _ = Run(ShowProfile); }
     private void Home_Click(object sender, RoutedEventArgs e)
     {
+        if (CurrentGmail is { } g) { g.Inbox(); return; }
         if (reader is { IsReplyVisible: false } native) { _ = Run(native.OpenInbox); return; }
         NavigateFromReader(s => s.View.CoreWebView2.Navigate("https://e.mail.ru/inbox/"), true);
     }
@@ -221,14 +246,26 @@ public partial class MainWindow : Window
     private async void Add_Click(object sender, RoutedEventArgs e)
     {
         if (store.Settings.Profiles.Count >= 30) { MessageBox.Show(this, "Достигнут лимит: 30 профилей."); return; }
-        var name = AskName("Новый ящик", "Новый ящик"); if (name is null) return;
-        await Run(async () => { var p = new AccountProfile { Name = name }; store.Settings.Profiles.Add(p); store.Save(); RefreshProfiles(p.Id); await ShowProfile(); });
+        var added = AskAccount(); if (added is null) return;
+        await Run(async () => { var p = added; store.Settings.Profiles.Add(p); store.Save(); RefreshProfiles(p.Id); await ShowProfile(); });
     }
     private async void Rename_Click(object sender, RoutedEventArgs e)
     {
         if (Profiles.SelectedItem is not AccountProfile p) return;
         var name = AskName("Имя профиля", p.Name); if (name is null) return;
         await Run(async () => { p.Name = name; store.Save(); RefreshProfiles(p.Id); await ShowProfile(); });
+    }
+    private AccountProfile? AskAccount()
+    {
+        var name = new TextBox { Text = "Новый ящик", MaxLength = 60, Margin = new Thickness(0,8,0,12) };
+        var provider = new ComboBox { ItemsSource = new[] { "Mail.ru (официальный сайт)", "Gmail (официальный API)" }, SelectedIndex = 0, Margin = new Thickness(0,8,0,12) };
+        var panel = new StackPanel { Margin = new Thickness(20) };
+        panel.Children.Add(new TextBlock { Text = "Название ящика на этом компьютере:" }); panel.Children.Add(name);
+        panel.Children.Add(new TextBlock { Text = "Почтовый сервис:" }); panel.Children.Add(provider);
+        var button = new Button { Content = "Добавить", IsDefault = true }; panel.Children.Add(button);
+        var dialog = new Window { Owner = this, Title = "Новый ящик", Width = 430, SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner, Content = panel };
+        button.Click += (_,_) => { if (!string.IsNullOrWhiteSpace(name.Text)) dialog.DialogResult = true; };
+        return dialog.ShowDialog() == true ? new AccountProfile { Name = name.Text.Trim(), Provider = provider.SelectedIndex == 1 ? MailProvider.Gmail : MailProvider.MailRu } : null;
     }
     private string? AskName(string title, string value)
     {
@@ -243,17 +280,24 @@ public partial class MainWindow : Window
     }
     private async void Clear_Click(object sender, RoutedEventArgs e)
     {
+        if (CurrentGmail is { } g)
+        {
+            if (MessageBox.Show(this, "Отключить Gmail и удалить локальные токены и кэш? Серверные письма останутся. Открытый черновик будет потерян.", "Очистка Gmail", MessageBoxButton.YesNo) == MessageBoxResult.Yes)
+                await Run(g.ClearData);
+            return;
+        }
         if (Current is not { } current) return;
         if (MessageBox.Show(this, "Выйти из этого ящика и удалить его локальные cookies, кэш и данные сайтов? Несохранённый текст будет потерян. Письма на сервере останутся.", "Очистка сессии", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         await Run(async () => { CloseReader(); await current.ClearData(); current.View.CoreWebView2.Navigate("https://e.mail.ru/inbox/"); store.Log("session_cleared"); }, stopCache: true);
     }
     private async void Remove_Click(object sender, RoutedEventArgs e)
     {
-        if (Profiles.SelectedItem is not AccountProfile p || Current is not { } current) return;
+        if (Profiles.SelectedItem is not AccountProfile p || (Current is null && CurrentGmail is null)) return;
         if (MessageBox.Show(this, "Удалить профиль и очистить его локальную сессию? Серверный ящик и письма не удаляются.", "Удаление профиля", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         await Run(async () =>
         {
-            CloseReader(); await current.ClearData(); current.Dispose(); BrowserHost.Children.Remove(current.View); sessions.Remove(p.Id);
+            if (gmail.Remove(p.Id, out var g)) { await g.ClearData(); g.Dispose(); GmailHost.Children.Remove(g); }
+            else if (Current is { } current) { CloseReader(); await current.ClearData(); current.Dispose(); BrowserHost.Children.Remove(current.View); sessions.Remove(p.Id); }
             store.Settings.Profiles.Remove(p); store.Settings.ActiveProfile = store.Settings.Profiles.FirstOrDefault()?.Id; store.Save();
             RefreshProfiles(store.Settings.ActiveProfile); await ShowProfile();
         }, stopCache: true);
@@ -274,7 +318,7 @@ public partial class MainWindow : Window
         if (dialog.ShowDialog() != true) return;
         if (mailboxCache is not null && !store.Settings.AutomaticMailboxCache) await mailboxCache.StopAsync();
         if (dialog.RequiresReload)
-            await Run(async () => { CloseReader(); ApplyTheme(); foreach (var s in sessions.Values) await s.ApplySettings(); }, stopCache: true);
+            await Run(async () => { if (CurrentGmail is null) CloseReader(); ApplyTheme(); foreach (var s in sessions.Values) await s.ApplySettings(); }, stopCache: true);
         if (!cacheWasEnabled && store.Settings.AutomaticMailboxCache) mailboxCache?.Resume();
         else mailboxCache?.RequestCheck(true);
     }
