@@ -145,7 +145,8 @@ public sealed class ReaderDataService : IDisposable
         return await source.Extract<string>(ReaderActionScript.Create(action, letter.Url));
     }, token);
     public Task WaitForIdle(CancellationToken token) => Enqueue(_ => Task.FromResult(true), token);
-    public Task<ReaderSource.BatchResult> CacheMailbox(Action<string> progress, Action<ReaderLetter> discovered, CancellationToken token) =>
-        Enqueue(ct => source.CacheMailbox(progress, discovered, ct), token);
+    public Task<ReaderSource.BatchResult> CacheMailbox(Action<string> progress, Action<ReaderLetter> discovered, CancellationToken token,
+        bool onlyRead = false, Action<MailboxCacheProgress>? detail = null) =>
+        Enqueue(ct => source.CacheMailbox(progress, discovered, ct, onlyRead, detail), token);
     public void Dispose() { lifetime.Cancel(); Prepared.Clear(); requests.Writer.TryComplete(); }
 }

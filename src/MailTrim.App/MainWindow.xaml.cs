@@ -15,6 +15,7 @@ public partial class MainWindow : Window
     private bool readerMode;
     private DesktopIntegration? desktop;
     private MailMonitor? monitor;
+    private MailboxCacheMonitor? mailboxCache;
     private readonly System.Windows.Threading.DispatcherTimer visibleStatusTimer = new() { Interval = TimeSpan.FromSeconds(3) };
     private readonly Dictionary<Guid, DateTimeOffset> visibleStatusTimes = [];
     private bool readingVisibleStatus;
@@ -75,7 +76,7 @@ public partial class MainWindow : Window
             if (store.RulesUpgradeAvailable) MessageBox.Show(this, "Доступны новые фильтры рекламы. Ваш изменённый набор сохранён. Чтобы использовать новый набор: Настройки → Правила → Встроенные правила → Сохранить и перезагрузить. Это заменит ваши изменения правил.", "Обновление фильтров");
             if (store.Settings.CheckUpdatesOnStartup) await UpdateChecker.Check(this, store, true);
         };
-        Closed += (_, _) => { visibleStatusTimer.Stop(); monitor?.Dispose(); desktop?.Dispose(); desktop = null; CloseReader(); foreach (var session in sessions.Values) session.Dispose(); store.Log("app_closed"); };
+        Closed += (_, _) => { visibleStatusTimer.Stop(); monitor?.Dispose(); mailboxCache?.Dispose(); desktop?.Dispose(); desktop = null; CloseReader(); foreach (var session in sessions.Values) session.Dispose(); store.Log("app_closed"); };
         Closing += (_, e) =>
         {
             if (confirmedShutdown || desktop?.SystemEnding == true) return;
@@ -107,6 +108,8 @@ public partial class MainWindow : Window
             ((Grid)Content).Children.Add(backgroundHost);
             Grid.SetRow(backgroundHost, 1);
             monitor = new MailMonitor(store, backgroundHost, count => desktop.Notify(count), () => !busy, UpdateMailboxStatus); monitor.Start();
+            mailboxCache = new MailboxCacheMonitor(store, this, backgroundHost, () => !busy);
+            mailboxCache.Start();
             desktop.CheckRequested += monitor.RequestCheck;
             desktop.UpdateCounts(store.Settings.Profiles);
             visibleStatusTimer.Tick += async (_, _) => await RefreshVisibleMailboxStatus();
@@ -147,11 +150,11 @@ public partial class MainWindow : Window
         ReaderHost.Visibility = Visibility.Visible; ReaderButton.Content = "Оригинал";
         await reader.Start();
     }
-    private async Task Run(Func<Task> action)
+    private async Task Run(Func<Task> action, bool stopCache = false)
     {
         if (busy) return;
         busy = true; IsEnabled = false;
-        try { if (monitor is not null) await monitor.StopAsync(); await action(); }
+        try { if (monitor is not null) await monitor.StopAsync(); if (stopCache && mailboxCache is not null) await mailboxCache.StopAsync(); await action(); }
         catch (Microsoft.Web.WebView2.Core.WebView2RuntimeNotFoundException)
         {
             MessageBox.Show(this, "Не найден Microsoft Edge WebView2 Runtime. Установите Evergreen Runtime с сайта Microsoft и перезапустите приложение. Ссылка есть в README.", "Нужен WebView2");
@@ -161,7 +164,7 @@ public partial class MainWindow : Window
             store.Log("operation_failed");
             MessageBox.Show(this, "Операция не выполнена. Проверьте сеть, права на локальные файлы и настройки. Код: " + ex.GetType().Name, "MailTrim");
         }
-        finally { busy = false; IsEnabled = true; }
+        finally { busy = false; IsEnabled = true; mailboxCache?.RequestCheck(); }
     }
     private void RefreshProfiles(Guid? selected = null)
     {
@@ -213,7 +216,7 @@ public partial class MainWindow : Window
             CloseReader(); paused = !paused; PauseButton.Content = paused ? "Фильтры: выкл" : "Фильтры: вкл";
             PauseButton.ToolTip = paused ? "Включить фильтры" : "Приостановить фильтры";
             foreach (var s in sessions.Values) await s.ApplySettings();
-        });
+        }, stopCache: true);
     }
     private async void Add_Click(object sender, RoutedEventArgs e)
     {
@@ -242,7 +245,7 @@ public partial class MainWindow : Window
     {
         if (Current is not { } current) return;
         if (MessageBox.Show(this, "Выйти из этого ящика и удалить его локальные cookies, кэш и данные сайтов? Несохранённый текст будет потерян. Письма на сервере останутся.", "Очистка сессии", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-        await Run(async () => { CloseReader(); await current.ClearData(); current.View.CoreWebView2.Navigate("https://e.mail.ru/inbox/"); store.Log("session_cleared"); });
+        await Run(async () => { CloseReader(); await current.ClearData(); current.View.CoreWebView2.Navigate("https://e.mail.ru/inbox/"); store.Log("session_cleared"); }, stopCache: true);
     }
     private async void Remove_Click(object sender, RoutedEventArgs e)
     {
@@ -253,13 +256,27 @@ public partial class MainWindow : Window
             CloseReader(); await current.ClearData(); current.Dispose(); BrowserHost.Children.Remove(current.View); sessions.Remove(p.Id);
             store.Settings.Profiles.Remove(p); store.Settings.ActiveProfile = store.Settings.Profiles.FirstOrDefault()?.Id; store.Save();
             RefreshProfiles(store.Settings.ActiveProfile); await ShowProfile();
-        });
+        }, stopCache: true);
     }
-    private async void Settings_Click(object sender, RoutedEventArgs e)
+    private void Settings_Click(object sender, RoutedEventArgs e) => ShowSettings();
+    public async void ShowSettings(bool cacheTab = false)
     {
-        var dialog = new SettingsWindow(store) { Owner = this };
-        if (dialog.ShowDialog() != true || !dialog.RequiresReload) return;
-        await Run(async () => { CloseReader(); ApplyTheme(); foreach (var s in sessions.Values) await s.ApplySettings(); });
+        var cacheWasEnabled = store.Settings.AutomaticMailboxCache;
+        var dialog = new SettingsWindow(store, mailboxCache, cacheTab, async id =>
+        {
+            if (sessions.TryGetValue(id, out var session))
+            {
+                if (ReferenceEquals(Current, session) && reader is { IsReplyVisible: false }) CloseReader();
+                await session.ReaderData.WaitForIdle(CancellationToken.None);
+                session.ReaderData.Prepared.Clear(); session.ReaderState = null;
+            }
+        }) { Owner = this };
+        if (dialog.ShowDialog() != true) return;
+        if (mailboxCache is not null && !store.Settings.AutomaticMailboxCache) await mailboxCache.StopAsync();
+        if (dialog.RequiresReload)
+            await Run(async () => { CloseReader(); ApplyTheme(); foreach (var s in sessions.Values) await s.ApplySettings(); }, stopCache: true);
+        if (!cacheWasEnabled && store.Settings.AutomaticMailboxCache) mailboxCache?.Resume();
+        else mailboxCache?.RequestCheck(true);
     }
     private void ApplyTheme()
     {

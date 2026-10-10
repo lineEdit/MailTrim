@@ -49,8 +49,9 @@ public sealed class ReaderPane : Grid
     public Task BackgroundPreparation { get; private set; } = Task.CompletedTask;
     private ReaderLetter? selectedLetter;
     private readonly Stack<ReaderLetter> history = new();
-    private CancellationTokenSource? batch;
-    private readonly Button cacheButton = new() { Content = "Кэш всего ящика", Padding = new Thickness(8,4,8,4) };
+    private readonly TextBlock cacheNotice = new() { FontSize = 11, Margin = new Thickness(8, 0, 8, 4), TextWrapping = TextWrapping.Wrap };
+    private readonly ProgressBar cacheProgress = new() { Height = 3, Margin = new Thickness(8, 0, 8, 6), Visibility = Visibility.Collapsed };
+    private readonly Button cacheButton = new() { Content = "Кэш…", ToolTip = "Настройки автоматического кэширования", Padding = new Thickness(8,4,8,4) };
     private Panel? browserParent;
     private int browserIndex;
     private Visibility browserVisibility;
@@ -111,7 +112,7 @@ public sealed class ReaderPane : Grid
     {
         if (openingOriginal || lifetime.IsCancellationRequested) return;
         openingOriginal = true; entryRefreshNeeded = false;
-        CancelPreparation(); listRefresh?.Cancel(); folderLoad?.Cancel(); messageRead?.Cancel(); batch?.Cancel();
+        CancelPreparation(); listRefresh?.Cancel(); folderLoad?.Cancel(); messageRead?.Cancel();
         try
         {
             // Cancelled navigation must stop before the visible original starts navigating.
@@ -182,12 +183,13 @@ public sealed class ReaderPane : Grid
         </Style>
         """);
         folderPanel.SetResourceReference(BackgroundProperty, "Surface");
-        var folderHeading = new TextBlock { Text = "ПАПКИ", FontSize = 11, Margin = new Thickness(12, 12, 8, 6) };
-        folderHeading.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        var folderHeading = new DockPanel();
+        DockPanel.SetDock(toggleFolders, Dock.Left); folderHeading.Children.Add(toggleFolders);
+        var folderLabel = new TextBlock { Text = "ПАПКИ", FontSize = 11, Margin = new Thickness(4, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center };
+        folderLabel.SetResourceReference(TextBlock.ForegroundProperty, "Muted"); folderHeading.Children.Add(folderLabel);
         DockPanel.SetDock(folderHeading, Dock.Top); folderPanel.Children.Add(folderHeading); folderPanel.Children.Add(folders);
-        var heading = new DockPanel(); tools.Children.Add(heading);
-        DockPanel.SetDock(toggleFolders, Dock.Left); heading.Children.Add(toggleFolders); heading.Children.Add(folderTitle);
-        toggleFolders.Click += (_, _) => SetFoldersVisible(folderPanel.Visibility != Visibility.Visible, true);
+        var heading = new DockPanel(); tools.Children.Add(heading); heading.Children.Add(folderTitle);
+        toggleFolders.Click += (_, _) => SetFoldersVisible(folders.Visibility != Visibility.Visible, true);
         System.Windows.Automation.AutomationProperties.SetName(folders, "Папки почты");
         folders.SelectionChanged += async (_, _) => {
             if (restoring || folders.SelectedItem is not ReaderFolder folder || folder.Url.TrimEnd('/') == folderUrl.TrimEnd('/')) return;
@@ -201,7 +203,7 @@ public sealed class ReaderPane : Grid
         refresh.Click += async (_, _) => await RefreshList();
         var more = new Button { Content = "+", ToolTip = "Ещё письма", Padding = new Thickness(8,4,8,4) }; actions.Children.Add(more);
         more.Click += async (_, _) => await LoadList(false, true);
-        actions.Children.Add(cacheButton); cacheButton.Click += async (_, _) => await RequestCache();
+        actions.Children.Add(cacheButton); cacheButton.Click += (_, _) => (Window.GetWindow(this) as MainWindow)?.ShowSettings(true);
         var searchRow = new DockPanel { Margin = new Thickness(4) };
         var find = new Button { Content = "Найти", Padding = new Thickness(6,4,6,4) };
         var resetSearch = new Button { Content = "×", ToolTip = "Сбросить поиск", Padding = new Thickness(6,4,6,4) };
@@ -211,15 +213,10 @@ public sealed class ReaderPane : Grid
         find.Click += async (_, _) => await SearchSaved(searchBox.Text);
         searchBox.KeyDown += async (_, e) => { if (e.Key == System.Windows.Input.Key.Enter) { e.Handled = true; await SearchSaved(searchBox.Text); } };
         resetSearch.Click += async (_, _) => await SearchSaved("");
-        var clear = new MenuItem { Header = "Удалить зашифрованный кэш этого ящика" };
-        cacheButton.ContextMenu = new ContextMenu(); cacheButton.ContextMenu.Items.Add(clear);
-        clear.Click += (_, _) => {
-            if (loading || IsReplyVisible) return;
-            if (MessageBox.Show(Window.GetWindow(this), "Удалить локальные копии? Письма на сервере останутся.", "Очистка кэша", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
-            entryRefreshNeeded = false; listRefresh?.Cancel();
-            CancelPreparation(); readGeneration++; messageRead?.Cancel(); messageRead = null; readingMessage = false;
-            try { session.Cache.Clear(); session.ReaderData.Prepared.Clear(); preparationPaused = true; UpdatePreparationNotice(); notice.Text = "Кэш удалён. Подготовка приостановлена; ↻ — возобновить."; } catch { notice.Text = "Не удалось очистить кэш."; }
-        };
+        cacheNotice.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        tools.Children.Add(cacheNotice); tools.Children.Add(cacheProgress);
+        session.Store.CacheProgressChanged += OnCacheProgress;
+        if (session.Store.CacheProgress.TryGetValue(session.ProfileId, out var progress)) OnCacheProgress(session.ProfileId, progress);
         notice.FontSize = 11; notice.MaxHeight = 72;
         preparationNotice.SetResourceReference(TextBlock.ForegroundProperty, "Muted"); tools.Children.Add(preparationNotice);
         tools.Children.Add(notice); left.Children.Add(list);        list.SelectionChanged += async (_, _) => { if (!restoring && list.SelectedItem is ReaderLetter letter) await Read(letter); };
@@ -248,8 +245,10 @@ public sealed class ReaderPane : Grid
     }
     private void SetFoldersVisible(bool visible, bool save = false)
     {
-        folderPanel.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-        ColumnDefinitions[0].Width = new GridLength(visible ? 164 : 0);
+        // The 40px rail keeps the toggle at a fixed location in both states.
+        folders.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        ((DockPanel)folderPanel.Children[0]).Children[1].Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        ColumnDefinitions[0].Width = new GridLength(visible ? 164 : 40);
         toggleFolders.ToolTip = visible ? "Свернуть папки" : "Показать папки";
         System.Windows.Automation.AutomationProperties.SetName(toggleFolders, toggleFolders.ToolTip.ToString());
         if (save) session.SaveReaderFoldersVisible(visible);
@@ -496,7 +495,7 @@ public sealed class ReaderPane : Grid
     }
     private void SchedulePreparation()
     {
-        if (preparationPaused || lifetime.IsCancellationRequested || openingOriginal || IsReplyVisible || searchBox.Text.Length > 0 || batch is not null) return;
+        if (preparationPaused || lifetime.IsCancellationRequested || openingOriginal || IsReplyVisible || searchBox.Text.Length > 0) return;
         CancelPreparation();
         var request = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token); preparation = request;
         preparingMessage = false;
@@ -553,30 +552,17 @@ public sealed class ReaderPane : Grid
         if (index < 0) index = ~index;
         letters.Insert(index, letter);
         list.Items.Insert(index, letter);
-    }    private async Task RequestCache()
+    }
+    private void OnCacheProgress(Guid profile, MailboxCacheProgress progress)
     {
-        if (batch is not null) { batch.Cancel(); return; }
-        if (loading || IsReplyVisible) return;
-        if (searchBox.Text.Length > 0) await SearchSaved("");
-        if (MessageBox.Show(Window.GetWindow(this), "Заранее загрузить весь ящик через Mail.ru?\n\nПриложение обойдёт стандартные и доступные пользовательские папки, включая спам и корзину. Открытие писем может пометить их прочитанными.\n\nТекст и ссылки на картинки сохранятся на этом компьютере в кэше, зашифрованном для вашей учётной записи Windows. Картинки и вложения автоматически не скачиваются. Лимит — 512 МБ на профиль. Существующий кэш будет дополнен.\n\nЗагрузка может занять долгое время. Её можно остановить; сохранённое останется. Начать?", "Кэш всего ящика", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
-        batch = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
-        entryRefreshNeeded = false;
-        CancelPreparation();
-        listRefresh?.Cancel();
-        working = loading = true; list.IsEnabled = false; cacheButton.Content = "Остановить";
-        try
-        {
-            var result = await session.ReaderData.CacheMailbox(text => notice.Text = text, AddLetter, batch.Token);
-            notice.Text = $"Сохранено: {result.Saved}, ошибок: {result.Failed}.";
-            if (!lifetime.IsCancellationRequested)
-                MessageBox.Show(Window.GetWindow(this), $"В кэше: {result.Saved} писем. Ошибок чтения: {result.Failed}.\nОбработано папок: {result.Folders}.\nПапок без подтверждённого конца списка: {result.UncertainFolders}.\n\nСайт может не показывать скрытые папки или часть списка. Это кэш доступных сообщений, а не подтверждённая резервная копия всего ящика.", "Загрузка завершена");
-        }
-        catch (OperationCanceledException) { notice.Text = "Остановлено. Сохранённые письма доступны из кэша."; }
-        catch { notice.Text = "Загрузка прервана. Проверьте вход, сеть и место для кэша. Сохранённые письма остались."; }
-        finally { batch.Dispose(); batch = null; working = loading = false; list.IsEnabled = true; cacheButton.Content = "Кэш всего ящика"; }
+        if (profile != session.ProfileId || lifetime.IsCancellationRequested) return;
+        cacheNotice.Text = progress.Description;
+        cacheProgress.Visibility = progress.Running ? Visibility.Visible : Visibility.Collapsed;
+        cacheProgress.IsIndeterminate = progress.Indeterminate; cacheProgress.Value = progress.Percent;
     }
     public void Close()
     {
+        session.Store.CacheProgressChanged -= OnCacheProgress;
         CancelPreparation(); listRefresh?.Cancel(); folderLoad?.Cancel();
         DetachReply();
         session.ReaderState = new ReaderPosition(letters.ToArray(), selectedLetter?.Url, FindScroll(list)?.VerticalOffset ?? 0,

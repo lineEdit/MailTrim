@@ -10,11 +10,14 @@ public sealed class MessageCache
 {
     private readonly string directory;
     private readonly byte[] entropy;
-    private readonly object gate = new();
+    // Foreground and hidden background views share the same encrypted files.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, object> gates = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object gate;
     public MessageCache(string root, Guid profile)
     {
         directory = Path.Combine(root, "ReaderCache", profile.ToString("N"));
         entropy = profile.ToByteArray();
+        gate = gates.GetOrAdd(Path.GetFullPath(directory), _ => new object());
     }
     private string PathFor(string url) => Path.Combine(directory, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(url))) + ".bin");
     public List<ReaderLetter> List()

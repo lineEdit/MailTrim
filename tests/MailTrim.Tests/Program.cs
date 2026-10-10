@@ -2,6 +2,13 @@ using MailTrim.Core;
 
 var passed = 0;
 void Check(bool condition, string name) { if (!condition) throw new Exception("FAIL: " + name); Console.WriteLine("PASS " + name); passed++; }
+var discoveryProgress = new MailboxCacheProgress(CacheStage.Discovering, 2, 7, 120);
+Check(discoveryProgress.Indeterminate && discoveryProgress.Description.Contains("уточняется") && !discoveryProgress.Description.Contains("осталось"), "discovery never claims an exact message total or remaining count");
+var savingProgress = new MailboxCacheProgress(CacheStage.Saving, 7, 7, 20, 10, 4, 3, 1, 10, DiscoveryComplete: true);
+Check(!savingProgress.Indeterminate && savingProgress.Remaining == 6 && savingProgress.Percent == 40 && savingProgress.Description.Contains("ошибок 1"), "remaining cache work includes errors as completed and excludes skipped unread mail");
+Check((discoveryProgress with { Stage = CacheStage.Stopped }).Description.StartsWith("Поиск остановлен"), "stopping discovery does not pretend zero remaining work");
+Check((savingProgress with { Stage = CacheStage.Complete, Completed = 10 }).Percent == 100, "finished saving reports complete progress");
+Check(!new AppSettings().AutomaticMailboxCache, "automatic whole-mailbox reading requires opting in once");
 foreach (var url in new[] { "https://e.mail.ru/inbox/", "https://account.mail.ru/login", "https://id.vk.com/auth" })
     Check(NavigationPolicy.IsInternal(url), "official origin " + url);
 foreach (var url in new[] { "https://e.mail.ru.evil.test/", "https://evilmail.ru/", "http://e.mail.ru/", "https://e.mail.ru:444/", "https://evil@e.mail.ru/", "file:///C:/Windows/", "javascript:alert(1)", "https://news.mail.ru/" })

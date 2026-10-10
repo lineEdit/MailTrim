@@ -76,18 +76,20 @@ public sealed class ReaderSource(BrowserSession session)
     })()
     """;
     public sealed record ScrollState(bool Found, bool Bottom);
-    public sealed record BatchResult(int Saved, int Failed, int Folders, int UncertainFolders);
-    public async Task<BatchResult> CacheMailbox(Action<string> progress, Action<ReaderLetter> discovered, CancellationToken token)
+    public sealed record BatchResult(int Saved, int Failed, int Folders, int UncertainFolders, int Skipped = 0);
+    public async Task<BatchResult> CacheMailbox(Action<string> progress, Action<ReaderLetter> discovered, CancellationToken token, bool onlyRead = false, Action<MailboxCacheProgress>? detail = null)
     {
         var folders = new Queue<string>(); var seenFolders = new HashSet<string>(StringComparer.Ordinal);
         void AddFolder(string url) { if (NavigationPolicy.IsMail(url) && seenFolders.Add(url.TrimEnd('/'))) folders.Enqueue(url); }
         foreach (var name in new[] { "inbox", "sent", "archive", "drafts", "spam", "trash" }) AddFolder("https://e.mail.ru/" + name + "/");
         var messages = new Dictionary<string, ReaderLetter>();
-        int scanned = 0, uncertain = 0, saved = 0, failed = 0;
+        int scanned = 0, uncertain = 0, saved = 0, failed = 0, completed = 0;
+        var draftUrls = new HashSet<string>(StringComparer.Ordinal);
+        void Report(MailboxCacheProgress state) { progress(state.Description); detail?.Invoke(state); }
         while (folders.TryDequeue(out var folder))
         {
             token.ThrowIfCancellationRequested();
-            progress($"Поиск писем: папка {++scanned}, найдено {messages.Count}…");
+            Report(new(CacheStage.Discovering, ++scanned, seenFolders.Count, messages.Count));
             await Navigate(folder, token);
             bool reachedEnd = false; int unchanged = 0; int previousCount = -1;
             for (var page = 0; page < 10000; page++)
@@ -97,31 +99,45 @@ public sealed class ReaderSource(BrowserSession session)
                 foreach (var extra in await Extract<List<string>>(Folders) ?? []) AddFolder(extra);
                 var rows = await Extract<List<ReaderLetter>>(ReaderScript.List) ?? [];
                 token.ThrowIfCancellationRequested();
-                foreach (var row in rows.Select(ReaderData.Clean).OfType<ReaderLetter>())
-                    if (messages.TryAdd(row.Url, row)) discovered(row);
+                var cleanRows = rows.Select(ReaderData.Clean).OfType<ReaderLetter>().ToArray();
+                bool headersChanged = false;
+                foreach (var row in cleanRows)
+                {
+                    if (folder.TrimEnd('/').EndsWith("/drafts", StringComparison.Ordinal)) draftUrls.Add(row.Url);
+                    if (messages.TryAdd(row.Url, row)) { discovered(row); headersChanged = true; }
+                    else if (row.Unread != false && messages[row.Url].Unread != row.Unread) { messages[row.Url] = row; headersChanged = true; } // Any unread/unknown observation prevents automatic opening.
+                }
+                if (headersChanged) await Task.Run(() => session.Cache.SaveHeaders(cleanRows, token), token);
                 unchanged = messages.Count == previousCount ? unchanged + 1 : 0; previousCount = messages.Count;
                 var scroll = await Extract<ScrollState>(Advance);
-                progress($"Поиск писем: папка {scanned}, найдено {messages.Count}…");
+                Report(new(CacheStage.Discovering, scanned, seenFolders.Count, messages.Count));
                 if (unchanged >= 6 && scroll?.Bottom == true) { reachedEnd = true; break; }
                 if (unchanged >= 12) break;
             }
             if (!reachedEnd) uncertain++;
         }
-        foreach (var letter in messages.Values)
+        var eligible = messages.Values.Where(x => !onlyRead || x.Unread == false && !draftUrls.Contains(x.Url)).ToArray();
+        var skipped = messages.Count - eligible.Length;
+        MailboxCacheProgress Saving(CacheStage stage = CacheStage.Saving) => new(stage, scanned, seenFolders.Count, messages.Count,
+            eligible.Length, completed, saved, failed, skipped, uncertain, DiscoveryComplete: true);
+        Report(Saving());
+        foreach (var letter in eligible)
         {
             token.ThrowIfCancellationRequested();
-            progress($"Сохранение {saved + failed + 1}/{messages.Count} · ошибок {failed}");
-            if (session.Cache.Get(letter.Url) is not null) { saved++; continue; }
+            if (await Task.Run(() => session.Cache.Get(letter.Url), token) is not null) { saved++; completed++; Report(Saving()); continue; }
             try
             {
                 var blocks = await Read(letter, token);
                 token.ThrowIfCancellationRequested();
-                session.Cache.Save(letter, blocks); saved++;
+                await Task.Run(() => session.Cache.Save(letter, blocks), token); saved++;
             }
             catch (OperationCanceledException) { throw; }
             catch (IOException ex) when (ex.Message is "cache_size_limit" or "sign_in_required") { throw; }
             catch { failed++; }
+            completed++; Report(Saving());
+            await Task.Delay(350, token); // Keep request frequency modest, including in the tray.
         }
-        return new(saved, failed, scanned, uncertain);
+        Report(Saving(CacheStage.Complete));
+        return new(saved, failed, scanned, uncertain, skipped);
     }
 }

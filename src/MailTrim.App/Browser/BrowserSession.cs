@@ -9,6 +9,8 @@ namespace MailTrim.App;
 public sealed class BrowserSession : IDisposable
 {
     public WebView2 View { get; } = new();
+    public Guid ProfileId { get; private set; }
+    public LocalStore Store => store;
     private ReaderDataService? readerData;
     public ReaderDataService ReaderData => readerData ??= new ReaderDataService(this);
     public bool ReadingOnly { get; private set; }
@@ -58,18 +60,18 @@ public sealed class BrowserSession : IDisposable
     public BrowserSession(LocalStore store, Window owner, Action<string> status, Func<bool> paused, Action<string>? externalHandler = null)
         => (this.store, this.owner, this.status, this.paused, this.externalHandler) = (store, owner, status, paused, externalHandler);
 
-    public async Task Initialize(Guid profile)
+    public async Task Initialize(Guid profile, bool background = false)
     {
-        Cache = new MessageCache(store.Root, profile);
+        ProfileId = profile; Cache = new MessageCache(store.Root, profile);
         environment = await CoreWebView2Environment.CreateAsync(null, store.ProfilePath(profile));
         if (disposed) return;
         await View.EnsureCoreWebView2Async(environment);
         if (disposed) return;
-        await Configure(View, false);
-        View.CoreWebView2.Navigate("https://e.mail.ru/inbox/");
+        await Configure(View, false, background);
+        if (!background) View.CoreWebView2.Navigate("https://e.mail.ru/inbox/");
     }
 
-    private async Task Configure(WebView2 view, bool popup)
+    private async Task Configure(WebView2 view, bool popup, bool background = false)
     {
         var core = view.CoreWebView2;
         core.Settings.AreHostObjectsAllowed = false;
@@ -81,26 +83,29 @@ public sealed class BrowserSession : IDisposable
         core.Settings.IsStatusBarEnabled = false;
         core.NavigationStarting += (_, e) =>
         {
-            if (NavigationPolicy.IsInternal(e.Uri)) { status("Загрузка официальной страницы…"); return; }
+            if (NavigationPolicy.IsInternal(e.Uri)) { if (!background) status("Загрузка официальной страницы…"); return; }
             if ((popup || clearing) && e.Uri == "about:blank") return;
             e.Cancel = true;
+            if (background) return;
             // Do not leak an OAuth redirect URL into another browser automatically.
             if (NavigationPolicy.IsExternal(e.Uri) && e.IsUserInitiated) QueueExternal(e.Uri);
             else status("Переход за пределы почты остановлен. Откройте ссылку вручную в браузере.");
         };
         core.NavigationCompleted += (_, e) =>
         {
+            if (background) return;
             status(e.IsSuccess ? $"Готово · заблокировано запросов: {blocked}" : "Страница не загрузилась. Проверьте сеть или временно отключите фильтры.");
             if (!e.IsSuccess) store.Log("navigation_failed");
         };
         core.ServerCertificateErrorDetected += (_, e) => e.Action = CoreWebView2ServerCertificateErrorAction.Cancel;
         // Let WebView2 own notification display/click/close. Drop unsolicited origins,
         // muted notifications and the alternate polling mode, even with a prior permission.
-        core.NotificationReceived += (_, e) => e.Handled = !SiteNotificationPolicy.CanDeliver(store.Settings, e.SenderOrigin);
+        core.NotificationReceived += (_, e) => e.Handled = background || !SiteNotificationPolicy.CanDeliver(store.Settings, e.SenderOrigin);
         core.PermissionRequested += async (_, e) =>
         {
             e.SavesInProfile = false;
             e.State = CoreWebView2PermissionState.Deny;
+            if (background) return;
             if (e.PermissionKind == CoreWebView2PermissionKind.Notifications)
             {
                 if (SiteNotificationPolicy.CanDeliver(store.Settings, e.Uri)) e.State = CoreWebView2PermissionState.Allow;
@@ -120,11 +125,12 @@ public sealed class BrowserSession : IDisposable
             if (!store.Rules.ShouldBlock(e.Request.Uri, store.Settings.BlockRequests && !paused())) return;
             e.Response = environment!.CreateWebResourceResponse(null, 403, "Blocked by MailTrim", "Cache-Control: no-store");
             blocked++;
-            if (blocked == 1 || blocked % 10 == 0) status($"Заблокировано запросов: {blocked}");
+            if (!background && (blocked == 1 || blocked % 10 == 0)) status($"Заблокировано запросов: {blocked}");
         };
         core.NewWindowRequested += async (_, e) =>
         {
             e.Handled = true;
+            if (background) return;
             if (!NavigationPolicy.IsInternal(e.Uri) && e.Uri != "about:blank")
             {
                 if (e.IsUserInitiated && NavigationPolicy.IsExternal(e.Uri)) QueueExternal(e.Uri);
@@ -153,6 +159,7 @@ public sealed class BrowserSession : IDisposable
         };
         core.DownloadStarting += async (_, e) =>
         {
+            if (background) { e.Cancel = true; return; }
             // Use WebView2's download UI; always ask for a path, never auto-open attachments.
             using var deferral = e.GetDeferral();
             e.Cancel = true;

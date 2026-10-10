@@ -8,6 +8,14 @@ namespace MailTrim.App;
 
 public sealed class LocalStore
 {
+    // Runtime status only: never serialized or written to the event log.
+    public Dictionary<Guid, MailboxCacheProgress> CacheProgress { get; } = [];
+    public event Action<Guid, MailboxCacheProgress>? CacheProgressChanged;
+    public void ReportCache(Guid profile, MailboxCacheProgress progress)
+    {
+        CacheProgress[profile] = progress;
+        CacheProgressChanged?.Invoke(profile, progress);
+    }
     public string Root { get; }
     public string RulesPath => Path.Combine(Root, "rules.json");
     public AppSettings Settings { get; }

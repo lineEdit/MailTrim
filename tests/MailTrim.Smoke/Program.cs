@@ -340,9 +340,10 @@ internal static class Program
                 var folderNavigation = pane.Children.OfType<DockPanel>().Single(p => p.Children.OfType<ListBox>().Any(l => l.Name == "ReaderFolders"));
                 var folderList = folderNavigation.Children.OfType<ListBox>().Single();
                 Check(folderList.Items.Cast<ReaderFolder>().Any(f => f.Name == "Документы") && folderList.Items.Count == 7 && folderNavigation.Visibility == Visibility.Visible, "standard and named custom folders are directly visible without a dropdown");
-                var folderToggle = ((StackPanel)((DockPanel)pane.Children[0]).Children[0]).Children.OfType<DockPanel>().First().Children.OfType<Button>().Single();
+                var folderToggle = ((DockPanel)folderNavigation.Children[0]).Children.OfType<Button>().Single();
+                pane.UpdateLayout(); var fixedTogglePosition = folderToggle.TranslatePoint(new Point(0, 0), pane);
                 folderToggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); pane.UpdateLayout();
-                Check(folderNavigation.Visibility == Visibility.Collapsed && pane.ColumnDefinitions[0].ActualWidth == 0 && !new LocalStore(root).Settings.ReaderFoldersVisible, "collapsing navigation returns its entire width to the letter and persists preference");
+                Check(folderList.Visibility == Visibility.Collapsed && pane.ColumnDefinitions[0].ActualWidth == 40 && folderToggle.TranslatePoint(new Point(0, 0), pane) == fixedTogglePosition && !new LocalStore(root).Settings.ReaderFoldersVisible, "collapsing navigation keeps the toggle fixed, leaves a compact rail and persists preference");
                 pane.ColumnDefinitions[1].Width = new GridLength(420); pane.UpdateLayout();
                 var readerSplitter = pane.Children.OfType<GridSplitter>().Single();
                 readerSplitter.RaiseEvent(new System.Windows.Controls.Primitives.DragCompletedEventArgs(110, 0, false)
@@ -412,8 +413,8 @@ internal static class Program
                     Check(searchStopped, "cache search respects cancellation");
                 }
                 var resumed = new ReaderPane(a, () => { }); host.Children.Add(resumed); await resumed.Start();
-                Check(resumed.ColumnDefinitions[1].Width.Value == 420 && resumed.ColumnDefinitions[0].Width.Value == 0, "reopened reader restores list width and collapsed folder navigation");
-                var resumedToggle = ((StackPanel)((DockPanel)resumed.Children[0]).Children[0]).Children.OfType<DockPanel>().First().Children.OfType<Button>().Single();
+                Check(resumed.ColumnDefinitions[1].Width.Value == 420 && resumed.ColumnDefinitions[0].Width.Value == 40, "reopened reader restores list width and collapsed folder navigation");
+                var resumedToggle = ((DockPanel)resumed.Children.OfType<DockPanel>().Single(p => p.Children.OfType<ListBox>().Any(l => l.Name == "ReaderFolders")).Children[0]).Children.OfType<Button>().Single();
                 resumedToggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 Check(new LocalStore(root).Settings.ReaderFoldersVisible && resumed.ColumnDefinitions[0].Width.Value == 164, "navigation can be expanded again after reopening");
                 resumed.UpdateLayout();
@@ -630,10 +631,52 @@ internal static class Program
                 Console.WriteLine("Checking whole-mailbox scan with synthetic folders…");
                 var batchResult = await a.ReaderData.CacheMailbox(_ => { }, _ => { }, CancellationToken.None);
                 Check(batchResult.Folders == 7 && batchResult.Saved == 2 && batchResult.Failed == 0 && batchResult.UncertainFolders == 0, "batch scans default and discovered folders to the end and persists messages");
+                // A separate hidden collector must not move the foreground view or open unread/unknown/draft mail.
+                a.Cache.Clear();
+                var foregroundSource = a.View.CoreWebView2.Source;
+                var collector = new BrowserSession(store, window, _ => { }, () => false);
+                sessions.Add(collector); host.Children.Add(collector.View); collector.View.Visibility = Visibility.Hidden;
+                await collector.Initialize(id, background: true);
+                var collectorReads = new List<string>();
+                collector.View.CoreWebView2.WebResourceRequested += (_, e) =>
+                {
+                    if (!NavigationPolicy.IsMail(e.Request.Uri)) return;
+                    var path = new Uri(e.Request.Uri).AbsolutePath;
+                    string html;
+                    if (path.StartsWith("/__cache_", StringComparison.Ordinal))
+                    { collectorReads.Add(path); html = "<div class='letter-body__body-content'>Prepared by background collector</div>"; }
+                    else
+                    {
+                        var rows = path == "/drafts/" ? "<a class='js-letter-list-item' data-read='true' href='/__cache_draft'>Draft</a>" :
+                            "<a class='js-letter-list-item' data-read='true' href='/__cache_read'><span class='llc__subject'>Read</span></a>" +
+                            "<a class='js-letter-list-item' data-unread='true' href='/__cache_unread'>Unread</a>" +
+                            "<a class='js-letter-list-item' href='/__cache_unknown'>Unknown</a>";
+                        html = "<div class='ReactVirtualized__List' style='height:100px;overflow:auto'>" + rows + "</div>";
+                    }
+                    e.Response = collector.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(html)), 200, "OK", "Content-Type: text/html; charset=utf-8");
+                };
+                var automaticProgress = new List<MailboxCacheProgress>();
+                var automaticResult = await collector.ReaderData.CacheMailbox(_ => { }, _ => { }, CancellationToken.None, onlyRead: true, detail: automaticProgress.Add);
+                Check(automaticResult.Saved == 1 && automaticResult.Skipped == 3 && collectorReads.SequenceEqual(new[] { "/__cache_read" }), "automatic whole-mailbox collection opens only confirmed read mail and skips unread, unknown and draft bodies");
+                Check(a.View.CoreWebView2.Source == foregroundSource && collector.View.Visibility == Visibility.Hidden, "separate collector leaves foreground mail and reply navigation untouched");
+                Check(automaticProgress.Any(x => x.Stage == CacheStage.Discovering && x.Indeterminate) && automaticProgress.Last() is { Stage: CacheStage.Complete, Total: 1, Completed: 1, Remaining: 0, Skipped: 3 }, "whole-mailbox progress transitions from unknown discovery to exact eligible completion");
+                Check(a.Cache.List().Count == 4 && a.Cache.Get("https://e.mail.ru/__cache_unread") is null, "headers of skipped mail persist without caching or reading their bodies");
+                store.Settings.AutomaticMailboxCache = true; store.Save();
+                Check(new LocalStore(root).Settings.AutomaticMailboxCache, "automatic cache preference survives a new application settings instance");
+                store.Settings.AutomaticMailboxCache = false; store.Save();
+                var settingsWindow = new SettingsWindow(store, openCacheTab: true) { Owner = window, Left = -20000, Top = -20000, ShowInTaskbar = false, ShowActivated = false, WindowStartupLocation = WindowStartupLocation.Manual };
+                settingsWindow.Show(); settingsWindow.UpdateLayout();
+                var settingsTabs = ((DockPanel)settingsWindow.Content).Children.OfType<TabControl>().Single();
+                Check(settingsTabs.SelectedItem is TabItem { Header: "Письма и кэш" } && settingsTabs.Items.Count == 5, "cache settings open directly with filtering, Windows, updates and advanced rules separated");
+                store.ReportCache(id, automaticProgress.Last());
+                var cacheSettingsBitmap = new RenderTargetBitmap((int)settingsWindow.ActualWidth, (int)settingsWindow.ActualHeight, 96, 96, PixelFormats.Pbgra32); cacheSettingsBitmap.Render((Visual)settingsWindow.Content);
+                var cacheSettingsEncoder = new PngBitmapEncoder(); cacheSettingsEncoder.Frames.Add(BitmapFrame.Create(cacheSettingsBitmap));
+                using (var capture = File.Create(Path.Combine(root, "cache-settings.png"))) cacheSettingsEncoder.Save(capture);
+                settingsWindow.Close(); collector.Dispose(); sessions.Remove(collector); host.Children.Remove(collector.View);
                 using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
                 bool stopped = false;
                 try { await a.ReaderData.CacheMailbox(_ => { }, _ => { }, cancelled.Token); } catch (OperationCanceledException) { stopped = true; }
-                Check(stopped && reopenedCache.List().Count == 2, "cancelling batch preserves saved messages");
+                Check(stopped && reopenedCache.List().Count == 4, "cancelling batch preserves saved messages");
                 await a.ClearData();
                 Check(reopenedCache.List().Count == 0, "clearing profile also clears encrypted reader cache");                host.Children.Remove(pane);
                 store.Settings.Profiles.Add(new AccountProfile { Name = "Рабочий ящик" });
