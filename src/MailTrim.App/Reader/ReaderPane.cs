@@ -1,8 +1,6 @@
 using System.IO;
-using System.Net.Http;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Media.Imaging;
 using MailTrim.Core;
 
 namespace MailTrim.App;
@@ -12,6 +10,9 @@ public sealed class ReaderPane : Grid
 {
     private readonly BrowserSession session;
     private readonly Action original;
+    private readonly ReaderImageLoader imageLoader;
+    private CancellationTokenSource? imageRender;
+    public Task BackgroundImages { get; private set; } = Task.CompletedTask;
     private readonly ListBox list = new() { BorderThickness = new Thickness(0) };
     private readonly StackPanel body = new() { Margin = new Thickness(16), HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly TextBlock notice = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(8) };
@@ -51,7 +52,6 @@ public sealed class ReaderPane : Grid
     private readonly Stack<ReaderLetter> history = new();
     private readonly TextBlock cacheNotice = new() { FontSize = 11, Margin = new Thickness(8, 0, 8, 4), TextWrapping = TextWrapping.Wrap };
     private readonly ProgressBar cacheProgress = new() { Height = 3, Margin = new Thickness(8, 0, 8, 6), Visibility = Visibility.Collapsed };
-    private readonly Button cacheButton = new() { Content = "Кэш…", ToolTip = "Настройки автоматического кэширования", Padding = new Thickness(8,4,8,4) };
     private Panel? browserParent;
     private int browserIndex;
     private Visibility browserVisibility;
@@ -93,6 +93,7 @@ public sealed class ReaderPane : Grid
     }
     private async Task OpenReply(ReaderLetter letter)
     {
+        imageRender?.Cancel();
         entryRefreshNeeded = false;
         CancelPreparation();
         listRefresh?.Cancel();
@@ -111,6 +112,7 @@ public sealed class ReaderPane : Grid
     public async Task OpenOriginal()
     {
         if (openingOriginal || lifetime.IsCancellationRequested) return;
+        imageRender?.Cancel();
         openingOriginal = true; entryRefreshNeeded = false;
         CancelPreparation(); listRefresh?.Cancel(); folderLoad?.Cancel(); messageRead?.Cancel();
         try
@@ -126,9 +128,9 @@ public sealed class ReaderPane : Grid
         catch { if (!lifetime.IsCancellationRequested) notice.Text = "Не удалось открыть оригинал. Повторите попытку."; }
         finally { openingOriginal = false; }
     }
-    public ReaderPane(BrowserSession session, Action original)
+    public ReaderPane(BrowserSession session, Action original, ReaderImageLoader? imageLoader = null)
     {
-        this.session = session; this.original = original;
+        this.session = session; this.original = original; this.imageLoader = imageLoader ?? new ReaderImageLoader();
         session.SetReadingOnly(true);
         System.Windows.Automation.AutomationProperties.SetName(searchBox, "Поиск в сохранённых письмах");
         SetResourceReference(BackgroundProperty, "Panel");
@@ -161,9 +163,10 @@ public sealed class ReaderPane : Grid
         folders.ItemTemplate = (DataTemplate)System.Windows.Markup.XamlReader.Parse("""
         <DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
           <DockPanel ToolTip="{Binding Name}" Margin="4,8">
-            <TextBlock Text="{Binding Glyph}" FontFamily="Segoe MDL2 Assets" Width="24" VerticalAlignment="Center"/>
-            <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+            <TextBlock Text="{Binding Glyph}" FontFamily="Segoe MDL2 Assets" FontSize="18" Width="24" VerticalAlignment="Center"/>
+            <TextBlock x:Name="FolderName" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Text="{Binding Name}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
           </DockPanel>
+          <DataTemplate.Triggers><DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource AncestorType=ListBox}}" Value="False"><Setter TargetName="FolderName" Property="Visibility" Value="Collapsed"/></DataTrigger></DataTemplate.Triggers>
         </DataTemplate>
         """);
         folders.ItemContainerStyle = (Style)System.Windows.Markup.XamlReader.Parse("""
@@ -187,9 +190,13 @@ public sealed class ReaderPane : Grid
         DockPanel.SetDock(toggleFolders, Dock.Left); folderHeading.Children.Add(toggleFolders);
         var folderLabel = new TextBlock { Text = "ПАПКИ", FontSize = 11, Margin = new Thickness(4, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center };
         folderLabel.SetResourceReference(TextBlock.ForegroundProperty, "Muted"); folderHeading.Children.Add(folderLabel);
-        DockPanel.SetDock(folderHeading, Dock.Top); folderPanel.Children.Add(folderHeading); folderPanel.Children.Add(folders);
+        DockPanel.SetDock(folderHeading, Dock.Top); folderPanel.Children.Add(folderHeading);
+        var readerSettings = new Button { Name = "ReaderSettings", Content = "\uE713", FontFamily = new System.Windows.Media.FontFamily("Segoe MDL2 Assets"), FontSize = 18, Padding = new Thickness(7), ToolTip = "Настройки MailTrim", HorizontalAlignment = HorizontalAlignment.Left };
+        readerSettings.Click += (_, _) => (Window.GetWindow(this) as MainWindow)?.ShowSettings();
+        System.Windows.Automation.AutomationProperties.SetName(readerSettings, "Настройки MailTrim");
+        DockPanel.SetDock(readerSettings, Dock.Bottom); folderPanel.Children.Add(readerSettings); folderPanel.Children.Add(folders);
         var heading = new DockPanel(); tools.Children.Add(heading); heading.Children.Add(folderTitle);
-        toggleFolders.Click += (_, _) => SetFoldersVisible(folders.Visibility != Visibility.Visible, true);
+        toggleFolders.Click += (_, _) => SetFoldersVisible(folders.Tag is not true, true);
         System.Windows.Automation.AutomationProperties.SetName(folders, "Папки почты");
         folders.SelectionChanged += async (_, _) => {
             if (restoring || folders.SelectedItem is not ReaderFolder folder || folder.Url.TrimEnd('/') == folderUrl.TrimEnd('/')) return;
@@ -203,7 +210,6 @@ public sealed class ReaderPane : Grid
         refresh.Click += async (_, _) => await RefreshList();
         var more = new Button { Content = "+", ToolTip = "Ещё письма", Padding = new Thickness(8,4,8,4) }; actions.Children.Add(more);
         more.Click += async (_, _) => await LoadList(false, true);
-        actions.Children.Add(cacheButton); cacheButton.Click += (_, _) => (Window.GetWindow(this) as MainWindow)?.ShowSettings(true);
         var searchRow = new DockPanel { Margin = new Thickness(4) };
         var find = new Button { Content = "Найти", Padding = new Thickness(6,4,6,4) };
         var resetSearch = new Button { Content = "×", ToolTip = "Сбросить поиск", Padding = new Thickness(6,4,6,4) };
@@ -246,7 +252,8 @@ public sealed class ReaderPane : Grid
     private void SetFoldersVisible(bool visible, bool save = false)
     {
         // The 40px rail keeps the toggle at a fixed location in both states.
-        folders.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        folders.Margin = new Thickness(visible ? 4 : 0);
+        folders.Tag = visible; // Keep folder icons clickable in the narrow rail.
         ((DockPanel)folderPanel.Children[0]).Children[1].Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         ColumnDefinitions[0].Width = new GridLength(visible ? 164 : 40);
         toggleFolders.ToolTip = visible ? "Свернуть папки" : "Показать папки";
@@ -301,6 +308,7 @@ public sealed class ReaderPane : Grid
     }
     private async Task ChangeFolder(string url)
     {
+        imageRender?.Cancel();
         CancelPreparation();
         folderLoad?.Cancel(); working = loading = false;
         preparationRetry.Clear();
@@ -563,6 +571,7 @@ public sealed class ReaderPane : Grid
     public void Close()
     {
         session.Store.CacheProgressChanged -= OnCacheProgress;
+        imageRender?.Cancel(); imageRender?.Dispose(); imageRender = null; imageLoader.Dispose();
         CancelPreparation(); listRefresh?.Cancel(); folderLoad?.Cancel();
         DetachReply();
         session.ReaderState = new ReaderPosition(letters.ToArray(), selectedLetter?.Url, FindScroll(list)?.VerticalOffset ?? 0,
@@ -607,6 +616,7 @@ public sealed class ReaderPane : Grid
     private Task Read(ReaderLetter letter, bool remember = true)
     {
         if (working || loading && !readingMessage || IsReplyVisible || lifetime.IsCancellationRequested || !NavigationPolicy.IsMail(letter.Url)) return Task.CompletedTask;
+        imageRender?.Cancel();
         var generation = ++readGeneration;
         CancelPreparation();
         listRefresh?.Cancel();
@@ -653,38 +663,37 @@ public sealed class ReaderPane : Grid
     }
     private void Render(ReaderLetter letter, List<ReaderBlock> blocks)
     {
-            body.Children.Clear(); AddText(letter.Subject, 24); AddText(letter.Sender + " · " + letter.DateLabel, 13);
-            if (blocks.Count == 0) AddText("Не удалось извлечь содержимое. Откройте письмо в Mail.ru.");
-            foreach (var block in blocks ?? [])
+        imageRender?.Cancel(); imageRender?.Dispose(); imageRender = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        var token = imageRender.Token; var automatic = new List<Task>();
+        body.Children.Clear(); AddText(letter.Subject, 24); AddText(letter.Sender + " · " + letter.DateLabel, 13);
+        if (blocks.Count == 0) AddText("Не удалось извлечь содержимое. Откройте письмо в Mail.ru.");
+        foreach (var block in blocks)
+        {
+            if (string.IsNullOrEmpty(block.Image)) AddText(block.Text);
+            else if (Uri.TryCreate(block.Image, UriKind.Absolute, out var uri) && uri.Scheme == "https" && uri.UserInfo.Length == 0)
             {
-                if (string.IsNullOrEmpty(block.Image)) AddText(block.Text);
-                else if (Uri.TryCreate(block.Image, UriKind.Absolute, out var uri) && uri.Scheme == "https" && uri.UserInfo.Length == 0)
-                {
-                    var button = new Button { Content = "Показать картинку: " + block.Text, Tag = uri, HorizontalAlignment = HorizontalAlignment.Left, MaxWidth = 650, ToolTip = "Запрос к серверу картинки без cookies. Отправитель может узнать о просмотре." };
-                    body.Children.Add(button);
-                    button.Click += async (_, _) => await ShowImage(button, uri);
-                }
+                var button = new Button { Content = "Показать картинку: " + block.Text, Tag = uri, HorizontalAlignment = HorizontalAlignment.Left, MaxWidth = 650, ToolTip = "Запрос без cookies. Отправитель может узнать о просмотре." };
+                body.Children.Add(button);
+                button.Click += async (_, _) => await ShowImage(button, uri, token);
+                // Bound automatic work for long newsletters; additional images remain available by click.
+                if (session.Store.Settings.AutomaticallyLoadReaderImages && automatic.Count < 12) automatic.Add(ShowImage(button, uri, token));
             }
+        }
+        BackgroundImages = Task.WhenAll(automatic);
     }
-    private async Task ShowImage(Button button, Uri uri)
+    private async Task ShowImage(Button button, Uri uri, CancellationToken token)
     {
-        button.IsEnabled = false;
+        if (!button.IsEnabled || token.IsCancellationRequested) return;
+        button.IsEnabled = false; button.Content = "Загрузка картинки…";
         try
         {
-            using var client = new HttpClient(new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(15) };
-            using var response = await client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, lifetime.Token);
-            response.EnsureSuccessStatusCode();
-            if (response.Content.Headers.ContentLength > 8_000_000) throw new IOException();
-            await using var input = await response.Content.ReadAsStreamAsync(lifetime.Token);
-            using var data = new MemoryStream(); var buffer = new byte[16384]; int count;
-            while ((count = await input.ReadAsync(buffer, lifetime.Token)) > 0) { if (data.Length + count > 8_000_000) throw new IOException(); data.Write(buffer, 0, count); }
-            lifetime.Token.ThrowIfCancellationRequested(); data.Position = 0;
-            var bitmap = new BitmapImage(); bitmap.BeginInit(); bitmap.CacheOption = BitmapCacheOption.OnLoad; bitmap.DecodePixelWidth = 1400; bitmap.StreamSource = data; bitmap.EndInit(); bitmap.Freeze();
+            var bitmap = await imageLoader.Load(uri, token);
+            token.ThrowIfCancellationRequested();
             var index = body.Children.IndexOf(button);
-            if (index >= 0) { body.Children.RemoveAt(index); body.Children.Insert(index, new Image { Source = bitmap, MaxHeight = 1000, Margin = new Thickness(0,8,0,12) }); }
+            if (index >= 0) { body.Children.RemoveAt(index); body.Children.Insert(index, new Image { Source = bitmap, MaxHeight = 1000, Margin = new Thickness(0,8,0,12), ToolTip = "Изображение из письма" }); }
         }
-        catch (OperationCanceledException) { }
-        catch { button.Content = "Картинка недоступна — откройте оригинал"; }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch { if (!token.IsCancellationRequested) { button.Content = "Картинка недоступна · повторить"; button.IsEnabled = true; } }
     }
     private void AddText(string text, double size = 16) => body.Children.Add(new TextBlock { Text = text, FontSize = size, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0,0,0,12) });
 }

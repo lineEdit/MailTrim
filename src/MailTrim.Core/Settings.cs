@@ -34,6 +34,7 @@ public sealed class AppSettings
     public bool UseSiteNotifications { get; set; }
     public SavedWindowPosition? WindowPosition { get; set; }
     public double ReaderListWidth { get; set; } = 310;
+    public bool AutomaticallyLoadReaderImages { get; set; }
     public bool AutomaticMailboxCache { get; set; }
     public bool ReaderFoldersVisible { get; set; } = true;
 }

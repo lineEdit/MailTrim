@@ -82,6 +82,20 @@ public static class CosmeticScript
           const protectedSlot = protectedContent.split(',').flatMap(s => [s.trim(), s.trim() + ' *']).join(',');
           const marked = new Set();
           const topSlots = new Set();
+          const topHosts = new Map(); let nextHost = 0;
+          const workingTop = protectedContent + ',.thread,.letter-list__react,.llct,.letter-list,[role="toolbar"],[role="checkbox"],[role="dialog"],[role="alert"],form,h1,h2,a[href^="/"]:not([href^="//"]):not([href^="/api-proxy/"]),a[href^="https://e.mail.ru/"]:not([href*="/api-proxy/"])';
+          let topCSS = '';
+          const rememberTopSlot = slot => {
+            const host = slot.parentElement; if (!host) return;
+            for (const parent of topHosts.keys()) if (!parent.isConnected) topHosts.delete(parent);
+            let entry = topHosts.get(host);
+            if (!entry) { if (topHosts.size >= 16) return; entry = { id: String(++nextHost), slots: new Set() }; topHosts.set(host, entry); }
+            host.setAttribute('data-mailtrim-top-host', entry.id);
+            entry.slots.add([...host.children].indexOf(slot)+1);
+            topCSS = [...topHosts].flatMap(([parent, state]) => [...state.slots].map(index =>
+              `[data-mailtrim-top-host="${state.id}"] > :nth-child(${index}):not(${protectedSlot}):not(${workingTop}):not(:has(${workingTop})) { display: none !important; }`)).join('\n');
+            apply(); // Reserve zero height before a replacement creative gets its first paint.
+          };
           const promos = new Set();
           const attemptedClose = new WeakSet();
           const expanded = new Set();
@@ -179,7 +193,7 @@ public static class CosmeticScript
           });
           const hideTopPreloader = () => {
             const workingContent = node => node.closest(protectedContent) || node.querySelector(protectedContent)
-              || node.querySelector('.thread,.letter-list__react,.llct,.letter-list,[role="toolbar"],[role="checkbox"],[role="dialog"],form') || hasMailLink(node);
+              || node.querySelector('.thread,.letter-list__react,.llct,.letter-list,[role="toolbar"],[role="checkbox"],[role="dialog"],[role="alert"],form,h1,h2') || hasMailLink(node);
             // The recording shows two empty creative rectangles with thin text bars,
             // before the list toolbar. There is no ad label yet and classes are hashed.
             // Learn only this textless shape outside mail; retain its slot through loading.
@@ -193,7 +207,7 @@ public static class CosmeticScript
               const rgb = c.slice(1,4).map(Number);
               return Math.min(...rgb) >= 180 && Math.max(...rgb) < 250 && Math.max(...rgb) - Math.min(...rgb) <= 15;
             };
-            for (const list of document.querySelectorAll('.letter-list__react')) {
+            for (const list of document.querySelectorAll('.letter-list__react,.thread')) {
               if (list.closest(protectedContent)) continue;
               const lr = list.getBoundingClientRect();
               if (lr.width < 400 || lr.height <= 0) continue;
@@ -211,8 +225,9 @@ public static class CosmeticScript
                   const pair = cards.some((a,i) => cards.slice(i+1).some(b =>
                     b.left-a.right >= 100 && Math.abs(a.top-b.top) <= 4 && Math.abs(a.width-b.width) <= 4 && Math.abs(a.height-b.height) <= 4
                     && [a,b].every(card => bars.some(bar => bar.left >= card.right && bar.top >= card.top && bar.bottom <= card.bottom))));
-                  if (!pair) continue;
-                  slot.setAttribute('data-mailtrim-top-ad','true'); topSlots.add(slot);
+                  const single = cards.length === 1 && bars.some(bar => bar.left >= cards[0].right && bar.top >= cards[0].top && bar.bottom <= cards[0].bottom);
+                  if (!pair && !single) continue;
+                  slot.setAttribute('data-mailtrim-top-ad','true'); topSlots.add(slot); rememberTopSlot(slot);
                 }
               }
             }
@@ -303,7 +318,7 @@ public static class CosmeticScript
               .map(s => s + ' { display: none !important; }').join('\n')
               + (initialGuard ? '\nhtml[data-mailtrim-pending="true"] { opacity: 0 !important; }' : '')
               + (labeledAds ? '\n[data-mailtrim-ad="true"] { display: none !important; }' : '')
-              + (labeledAds ? '\n[data-mailtrim-top-ad="true"] { display: none !important; }' : '')
+              + (labeledAds ? '\n[data-mailtrim-top-ad="true"] { display: none !important; }\n' + topCSS : '')
               + (labeledAds ? `\n.js-banner-wrapper-container:not(${protectedSlot}):not(:has(${protectedContent})) { display: none !important; }` : '')
               + (compactLayout ? '\n[data-mailtrim-promo="true"] { display: none !important; }' : '')
               + (compactLayout ? '\n[data-mailtrim-wide="true"] { width: 100% !important; max-width: none !important; margin-inline: 0 !important; box-sizing: border-box !important; }\n[data-mailtrim-fill="true"] { height: 100% !important; }\n[data-mailtrim-viewport="true"] { height: calc(100vh - var(--mailtrim-top)) !important; }\n.thread > .thread__footer:not(.letter-body *, .letter__body *, .compose *, .compose-app *, [contenteditable="true"] *):not(:has(button, input, textarea, [contenteditable="true"])) { display: none !important; }' : '');
@@ -365,12 +380,15 @@ public static class CosmeticScript
             observer.observe(document.documentElement, {childList:true, subtree:true, characterData:true,
               attributes:true, attributeOldValue:true, attributeFilter:['class','style','href','aria-label','hidden']});
             window.addEventListener('resize', schedule);
+            document.addEventListener('load', schedule, true);
           };
           window.__mailtrimCleanup = () => {
             observer?.disconnect(); rootObserver?.disconnect(); resizeObserver?.disconnect(); cancelAnimationFrame(timer); cancelAnimationFrame(revealFrame); clearTimeout(revealTimeout);
             document.removeEventListener('DOMContentLoaded', ready);
             document.documentElement?.removeAttribute('data-mailtrim-pending');
             window.removeEventListener('resize', schedule);
+            document.removeEventListener('load', schedule, true);
+            for (const host of topHosts.keys()) host.removeAttribute('data-mailtrim-top-host'); topHosts.clear();
             for (const node of marked) node.removeAttribute('data-mailtrim-ad');
             for (const node of topSlots) node.removeAttribute('data-mailtrim-top-ad');
             for (const node of promos) node.removeAttribute('data-mailtrim-promo');

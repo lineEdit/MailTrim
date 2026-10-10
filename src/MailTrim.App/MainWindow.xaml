@@ -31,6 +31,8 @@
       <ContextMenu Background="{DynamicResource Panel}" Foreground="{DynamicResource Ink}">
        <MenuItem Header="Добавить ящик…" Click="Add_Click"/>
        <Separator/>
+       <MenuItem Header="Настройки MailTrim…" Click="Settings_Click"/>
+       <Separator/>
        <MenuItem x:Name="RenameMenu" Header="Переименовать текущий ящик…" Click="Rename_Click"/>
        <MenuItem x:Name="ClearMenu" Header="Очистить сессию текущего ящика…" Click="Clear_Click"/>
        <MenuItem x:Name="RemoveMenu" Header="Удалить текущий профиль…" Click="Remove_Click"/>
@@ -43,7 +45,6 @@
      <Button x:Name="ReloadButton" Content="↻" Width="34" Height="32" Padding="0" FontSize="18" ToolTip="Обновить (F5)" AutomationProperties.Name="Обновить" Click="Reload_Click"/>
      <Button x:Name="HomeButton" Content="Входящие" Height="32" Padding="10,0" Click="Home_Click"/>
      <Button x:Name="PauseButton" Content="Фильтры: вкл" Height="32" Padding="10,0" ToolTip="Приостановить фильтры" Click="Pause_Click"/>
-     <Button Content="⚙" Width="34" Height="32" Padding="0" FontSize="18" ToolTip="Настройки" AutomationProperties.Name="Настройки" Click="Settings_Click"/>
     </StackPanel>
    </Grid>
   </Border>

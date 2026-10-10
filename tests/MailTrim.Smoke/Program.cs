@@ -15,7 +15,7 @@ internal static class Program
     [STAThread]
     public static int Main(string[] args)
     {
-        if (args.Length != 1) { Console.Error.WriteLine("Pass an empty scratch directory for test data."); return 2; }
+        if (args.Length != 1 && !(args.Length == 2 && args[1] == "--images-only")) { Console.Error.WriteLine("Pass an empty scratch directory for test data; optionally --images-only."); return 2; }
         var root = Path.GetFullPath(args[0]);
         if (Directory.Exists(root) && Directory.EnumerateFileSystemEntries(root).Any()) { Console.Error.WriteLine("Test directory must be empty."); return 2; }
         var result = 1;
@@ -74,6 +74,11 @@ internal static class Program
                 await a.Initialize(id); await b.Initialize(secondProfileId);
                 a.View.CoreWebView2.Stop(); b.View.CoreWebView2.Stop();
                 ConfigureFixture(a); ConfigureFixture(b);
+                if (args.Length == 2)
+                {
+                    await Navigate(a, "https://e.mail.ru/inbox/");
+                    await ImageChecks.Run(a, host, Check); result = 0; return;
+                }
                 await Navigate(a, "https://e.mail.ru/__mailtrim_startup");
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("startupCSS && startupGuard && startupKnownHidden") == "true", "startup CSS and guard precede page scripts and DOMContentLoaded");
                 await WaitForScript(a, "startupFrames > 0 && !document.documentElement.hasAttribute('data-mailtrim-pending')");
@@ -91,6 +96,14 @@ internal static class Program
                 await WaitForScript(a, "document.getElementById('top-slot').getBoundingClientRect().height === 0");
                 await a.View.CoreWebView2.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, false, false));
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('top-slot').getBoundingClientRect().height === 90 && !document.querySelector('[data-mailtrim-top-ad]')") == "true", "pause restores top preloader and clears learned slot markers");
+                await Navigate(a, "https://e.mail.ru/__mailtrim_thread_preloader");
+                await WaitForScript(a, "window.threadDone === true");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("threadLeaks.length === 0 && threadFrames === 6") == "true", "single-card thread ad reservation stays at zero height even during root replacement, before scripts inspect the new creative");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('top-slot').innerHTML='<h2>Real heading</h2><form><input aria-label=Search></form>'");
+                await WaitForScript(a, "document.getElementById('top-slot').getBoundingClientRect().height > 0");
+                Check(true, "persistent top-slot CSS restores real headings and forms");
+                await a.View.CoreWebView2.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, false, false));
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("!document.querySelector('[data-mailtrim-top-host]') && document.getElementById('top-slot').getBoundingClientRect().height === 90") == "true", "pausing filters removes persistent host selectors and restores the original slot");
                 await Navigate(a, "https://e.mail.ru/__mailtrim_fixture");
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("getComputedStyle(document.querySelector('[data-testid=advertising]')).display") == "\"none\"", "cosmetics injected on trusted origin");
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("getComputedStyle(document.getElementById('message')).display") != "\"none\"", "message content remains visible");
@@ -343,7 +356,12 @@ internal static class Program
                 var folderToggle = ((DockPanel)folderNavigation.Children[0]).Children.OfType<Button>().Single();
                 pane.UpdateLayout(); var fixedTogglePosition = folderToggle.TranslatePoint(new Point(0, 0), pane);
                 folderToggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); pane.UpdateLayout();
-                Check(folderList.Visibility == Visibility.Collapsed && pane.ColumnDefinitions[0].ActualWidth == 40 && folderToggle.TranslatePoint(new Point(0, 0), pane) == fixedTogglePosition && !new LocalStore(root).Settings.ReaderFoldersVisible, "collapsing navigation keeps the toggle fixed, leaves a compact rail and persists preference");
+                Check(folderList.Visibility == Visibility.Visible && folderList.Tag is false && folderList.Items.Count == 7 && pane.ColumnDefinitions[0].ActualWidth == 40 && folderToggle.TranslatePoint(new Point(0, 0), pane) == fixedTogglePosition && !new LocalStore(root).Settings.ReaderFoldersVisible, "compact navigation keeps all folder icons clickable, fixes the toggle position and persists preference");
+                var railSettings = folderNavigation.Children.OfType<Button>().Single(x => x.Name == "ReaderSettings");
+                Check(DockPanel.GetDock(railSettings) == Dock.Bottom && railSettings.TranslatePoint(new Point(0,0), pane).Y > pane.ActualHeight - 70, "reader settings are anchored to the bottom of the icon rail");
+                var railBitmap = new RenderTargetBitmap((int)pane.ActualWidth, (int)pane.ActualHeight, 96, 96, PixelFormats.Pbgra32); railBitmap.Render(pane);
+                var railEncoder = new PngBitmapEncoder(); railEncoder.Frames.Add(BitmapFrame.Create(railBitmap));
+                using (var capture = File.Create(Path.Combine(root, "reader-rail.png"))) railEncoder.Save(capture);
                 pane.ColumnDefinitions[1].Width = new GridLength(420); pane.UpdateLayout();
                 var readerSplitter = pane.Children.OfType<GridSplitter>().Single();
                 readerSplitter.RaiseEvent(new System.Windows.Controls.Primitives.DragCompletedEventArgs(110, 0, false)
@@ -430,6 +448,7 @@ internal static class Program
                 Check(a.ReaderState.BodyOffset >= 100 && restoredScroll.VerticalOffset >= 100, "reader captures nonzero body scroll offset per profile");
                 resumed.Close(); host.Children.Remove(resumed);
 
+                await ImageChecks.Run(a, host, Check);
                 a.Cache.Clear();
                 a.ReaderState = new ReaderPosition(new[] {
                     new ReaderLetter("https://e.mail.ru/__pipeline_slow", "old", "Old", "", "", ReceivedAt: DateTimeOffset.UtcNow),
@@ -827,6 +846,8 @@ internal static class Program
                 e.Response = session.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "mail-startup.html")))), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
             if (fixturePath == "/__mailtrim_top_preloader")
                 e.Response = session.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "top-preloader.html")))), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
+            if (fixturePath == "/__mailtrim_thread_preloader")
+                e.Response = session.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "thread-preloader.html")))), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
             if (fixturePath == "/__mailtrim_startup_hold")
             {
                 using var deferral = e.GetDeferral(); await Task.Delay(1800);

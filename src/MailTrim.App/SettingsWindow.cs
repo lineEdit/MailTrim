@@ -11,6 +11,7 @@ public sealed class SettingsWindow : Window
     private readonly LocalStore store;
     private bool cacheOperation;
     public bool RequiresReload { get; private set; }
+    private readonly CheckBox automaticImages = new() { Content = "Загружать картинки автоматически в режиме «Только важное»" };
     private readonly CheckBox automaticCache = new() { Content = "Автоматически кэшировать прочитанные письма во всех папках" };
     private readonly CheckBox network = new() { Content = "Блокировать рекламные и аналитические запросы" };
     private readonly CheckBox cosmetic = new() { Content = "Скрывать рекламные блоки CSS-фильтрами" };
@@ -29,6 +30,7 @@ public sealed class SettingsWindow : Window
         this.store = store;
         Closing += (_, e) => { if (cacheOperation) e.Cancel = true; };
         Title = "Настройки MailTrim"; Width = 820; Height = 780; MinWidth = 640; MinHeight = 550; WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        automaticImages.IsChecked = store.Settings.AutomaticallyLoadReaderImages;
         automaticCache.IsChecked = store.Settings.AutomaticMailboxCache;
         network.IsChecked = store.Settings.BlockRequests; cosmetic.IsChecked = store.Settings.CosmeticFilters; aggressive.IsChecked = store.Settings.Aggressive;
         startup.IsChecked = store.Settings.StartWithWindows; tray.IsChecked = store.Settings.CloseToTray; notifications.IsChecked = store.Settings.NotifyNewMail;
@@ -70,6 +72,8 @@ public sealed class SettingsWindow : Window
         cachePanel.Children.Add(automaticCache);
         cachePanel.Children.Add(Note("Включите один раз и сохраните. Через 15 секунд после запуска приложение обходит доступные папки каждого ящика через отдельную скрытую страницу. Следующий обход — через 15 минут после завершения. Открытое письмо и редактор ответа остаются на месте. Нужен действующий вход Mail.ru/VK ID."));
         cachePanel.Children.Add(Note("Автоматически открываются только письма с явным признаком «прочитано». Непрочитанные, письма с неизвестным статусом и тела черновиков пропускаются; их заголовки сохраняются для поиска. Новые непрочитанные письма сохраняются после вашего открытия. Картинки и вложения автоматически не сохраняются в кэш; скрытая страница сайта может загружать картинки."));
+        cachePanel.Children.Add(automaticImages);
+        cachePanel.Children.Add(Note("По умолчанию картинки открываются по нажатию. При включении до 12 картинок выбранного письма загружаются автоматически, по две одновременно; остальные — по нажатию. Текст показывается сразу. Запросы идут без cookies, но сервер картинки может узнать о просмотре. Настройка применяется при следующем открытии письма."));
         cachePanel.Children.Add(Label("Загрузка по ящикам"));
         var cacheProfile = new ComboBox { ItemsSource = store.Settings.Profiles, DisplayMemberPath = "Name", SelectedValuePath = "Id", SelectedValue = store.Settings.ActiveProfile, MinWidth = 220, HorizontalAlignment = HorizontalAlignment.Left };
         if (cacheProfile.SelectedIndex < 0 && cacheProfile.Items.Count > 0) cacheProfile.SelectedIndex = 0;
@@ -154,6 +158,7 @@ public sealed class SettingsWindow : Window
                 store.Settings.Theme = (string)theme.SelectedItem; store.Settings.UpdateRepository = repo; store.Settings.CheckUpdatesOnStartup = updates.IsChecked == true; store.Settings.IncludePrereleaseUpdates = previewUpdates.IsChecked == true;
                 WindowsStartup.SetEnabled(startup.IsChecked == true);
                 store.Settings.StartWithWindows = startup.IsChecked == true; store.Settings.CloseToTray = tray.IsChecked == true; store.Settings.NotifyNewMail = notifications.IsChecked == true;
+                store.Settings.AutomaticallyLoadReaderImages = automaticImages.IsChecked == true;
                 store.Settings.AutomaticMailboxCache = automaticCache.IsChecked == true;
                 store.Settings.UseSiteNotifications = siteNotifications.IsChecked == true;
                 store.Save(); DialogResult = true;

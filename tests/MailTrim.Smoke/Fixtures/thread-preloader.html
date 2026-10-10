@@ -1,0 +1,27 @@
+<!doctype html><html><head><style>
+body{margin:0} main{position:fixed;left:10px;top:80px;width:900px}
+.reservation{height:90px;display:flex;align-items:center;gap:12px}
+.picture{width:120px;height:70px;background:rgb(236,238,240)}
+.bar{width:280px;height:4px;background:rgb(236,238,240)}
+.thread{height:400px} h1{margin:0} .letter-body{height:180px}
+</style></head><body>
+<main id="host"><div id="top-slot" class="reservation"><div class="picture"></div><div class="bar"></div></div><div class="thread"><h1>Actual subject</h1><div class="letter-body">Real mail</div></div></main>
+<script>
+window.threadLeaks=[]; window.threadFrames=0;
+setTimeout(() => requestAnimationFrame(switchMessage),200);
+function switchMessage(){
+  const thread=document.querySelector('.thread'); thread.remove();
+  // A new creative appears while the message root is temporarily absent.
+  // No ad label, placeholder or stable class is available on this new element.
+  document.getElementById('top-slot').outerHTML='<div id="top-slot" class="reservation hash-'+threadFrames+'"><button>Advertiser</button><span>Fresh creative</span></div>';
+  if(document.getElementById('top-slot').getBoundingClientRect().height!==0) threadLeaks.push('sync-'+threadFrames);
+  requestAnimationFrame(()=>{
+    if(document.getElementById('top-slot').getBoundingClientRect().height!==0) threadLeaks.push('empty-'+threadFrames);
+    document.getElementById('host').append(thread);
+    requestAnimationFrame(()=>{
+      if(thread.getBoundingClientRect().top!==80 || thread.getBoundingClientRect().height===0 || thread.querySelector('.letter-body').getBoundingClientRect().height===0) threadLeaks.push('mail-'+threadFrames);
+      if(++threadFrames<6) requestAnimationFrame(switchMessage); else window.threadDone=true;
+    });
+  });
+}
+</script></body></html>
