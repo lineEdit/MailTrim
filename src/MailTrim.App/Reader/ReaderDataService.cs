@@ -12,6 +12,26 @@ public sealed class ReaderDataService : IDisposable
     private readonly Channel<Func<Task>> requests = Channel.CreateBounded<Func<Task>>(new BoundedChannelOptions(32) { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
     private readonly CancellationTokenSource lifetime = new();
     private readonly Task worker;
+    public PreparedMessageStore Prepared { get; } = new();
+    public async Task HydratePrepared(IEnumerable<ReaderLetter> letters, CancellationToken token)
+    {
+        var rows = letters.Take(80).Where(x => Prepared.Get(x) is null).ToArray();
+        foreach (var group in rows.Chunk(8))
+        {
+            var documents = await Task.Run(() =>
+            {
+                var found = new List<ReaderDocument>();
+                foreach (var letter in group)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (session.Cache.Get(letter.Url) is { Count: > 0 } blocks) found.Add(new(letter, blocks.AsReadOnly(), true, true));
+                }
+                return found;
+            }, token);
+            token.ThrowIfCancellationRequested(); lifetime.Token.ThrowIfCancellationRequested();
+            foreach (var document in documents) Prepared.Put(document, DateTimeOffset.UtcNow);
+        }
+    }
     public ReaderDataService(BrowserSession session)
     {
         this.session = session; source = new ReaderSource(session); worker = Process();
@@ -92,7 +112,9 @@ public sealed class ReaderDataService : IDisposable
             ct.ThrowIfCancellationRequested(); bool saved = true;
             try { session.Cache.Save(letter, blocks); }
             catch (Exception ex) when (ex is IOException or System.Security.Cryptography.CryptographicException or UnauthorizedAccessException) { saved = false; }
-            return new ReaderDocument(letter, blocks.AsReadOnly(), false, saved);
+            var document = new ReaderDocument(letter, blocks.AsReadOnly(), false, saved);
+            Prepared.Put(document, DateTimeOffset.UtcNow);
+            return document;
         }
         catch (IOException) when (!ct.IsCancellationRequested && session.Cache.Get(letter.Url) is not null)
         {
@@ -125,5 +147,5 @@ public sealed class ReaderDataService : IDisposable
     public Task WaitForIdle(CancellationToken token) => Enqueue(_ => Task.FromResult(true), token);
     public Task<ReaderSource.BatchResult> CacheMailbox(Action<string> progress, Action<ReaderLetter> discovered, CancellationToken token) =>
         Enqueue(ct => source.CacheMailbox(progress, discovered, ct), token);
-    public void Dispose() { lifetime.Cancel(); requests.Writer.TryComplete(); }
+    public void Dispose() { lifetime.Cancel(); Prepared.Clear(); requests.Writer.TryComplete(); }
 }

@@ -7,7 +7,7 @@ public static class ReaderData
 {
     private static string Text(string? value, int limit) => (value ?? "").Length > limit ? value![..limit] : value ?? "";
     public static ReaderLetter? Clean(ReaderLetter? letter) => letter is null || !NavigationPolicy.IsMail(letter.Url) ? null
-        : new(letter.Url, Text(letter.Sender, 500), Text(letter.Subject, 2000), Text(letter.Preview, 300), Text(letter.Date, 100), letter.ReceivedAt, letter.CapturedAt, Text(letter.DateHint, 150));
+        : new(letter.Url, Text(letter.Sender, 500), Text(letter.Subject, 2000), Text(letter.Preview, 300), Text(letter.Date, 100), letter.ReceivedAt, letter.CapturedAt, Text(letter.DateHint, 150), letter.Unread);
     public static List<ReaderBlock> Clean(IEnumerable<ReaderBlock>? input)
     {
         var result = new List<ReaderBlock>(); int remaining = 500_000;

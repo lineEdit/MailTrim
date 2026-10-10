@@ -25,8 +25,13 @@ public static class ReaderScript
         }
         let hint='';
         for(let e=last,n=0;e && e!==row && n<4;e=e.parentElement,n++) { if(e.getAttribute('title')) { hint=e.getAttribute('title').slice(0,150); break; } }
+        const unreadValue=row.getAttribute('data-unread'), readValue=row.getAttribute('data-read');
+        const state=row.getAttribute('data-read-status');
+        let unread=null;
+        if(unreadValue==='true'||unreadValue==='1'||readValue==='false'||readValue==='0'||state==='unread'||row.matches('.llc__item_unread, .letter-list-item_unread'))unread=true;
+        else if(unreadValue==='false'||unreadValue==='0'||readValue==='true'||readValue==='1'||state==='read'||row.matches('.llc__item_read, .letter-list-item_read'))unread=false;
         return {url:row.href,sender:atoms[0]?.t||'',subject:atoms[1]?.t||'(без темы)',
-          preview:atoms.slice(2,-1).map(x=>x.t).join(' ').slice(0,300),date:atoms.at(-1)?.t||'',receivedAt:received,capturedAt:captured,dateHint:hint};
+          preview:atoms.slice(2,-1).map(x=>x.t).join(' ').slice(0,300),date:atoms.at(-1)?.t||'',receivedAt:received,capturedAt:captured,dateHint:hint,unread};
       }).filter(x=>new URL(x.url).origin===location.origin);
     })()
     """;
@@ -61,7 +66,7 @@ public static class ReaderScript
 public sealed record ReaderListSnapshot(bool Ready, List<ReaderLetter> Letters);
 
 public sealed record ReaderLetter(string Url, string Sender, string Subject, string Preview, string Date,
-    DateTimeOffset? ReceivedAt = null, DateTimeOffset? CapturedAt = null, string DateHint = "")
+    DateTimeOffset? ReceivedAt = null, DateTimeOffset? CapturedAt = null, string DateHint = "", bool? Unread = null)
 {
     [System.Text.Json.Serialization.JsonIgnore] public string DateLabel => ReaderChronology.DateKey(this) is null ? Date + " · дата не уточнена" : Date;
 }

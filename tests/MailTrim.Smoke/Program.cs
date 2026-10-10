@@ -361,7 +361,7 @@ internal static class Program
                 readerList.SelectedIndex = -1; readerList.SelectedIndex = 0;
                 Check(readerList.IsEnabled && readerNavigations == 0 && readerBody.Children.OfType<TextBlock>().Any(t => t.Text.Contains("Safe text")), "cached letter reopens synchronously without network navigation");
                 await pane.BackgroundMessageRefresh.WaitAsync(TimeSpan.FromSeconds(5));
-                Check(readerNavigations > 0, "cached preview is revalidated against the official page instead of staying cache-only");
+                Check(readerNavigations == 0, "fresh prepared message opens without another website navigation");
                 var searchNavigations = readerNavigations;
                 await pane.SearchSaved("missing-search-fixture-9347");
                 Check(readerList.Items.Count == 0 && readerNavigations == searchNavigations, "cache search shows empty result without navigating mail");
@@ -570,6 +570,62 @@ internal static class Program
                 Check(originalShown && (await b.View.CoreWebView2.ExecuteScriptAsync("document.body.textContent")).Contains("Fresh body changed on website"), "switching to original drains cancelled refresh before visible navigation");
                 originalRefreshPane.Close(); host.Children.Remove(originalRefreshPane);
                 b.View.CoreWebView2.WebResourceRequested -= RefreshFixture;
+                Console.WriteLine("Checking prepared structures and conservative read-only prefetch…");
+                b.Cache.Clear(); b.ReaderData.Prepared.Clear();
+                var preparationReads = new Dictionary<string, int>();
+                var slowPreparationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                var delayPreparation = false;
+                async void PreparationFixture(object? sender, CoreWebView2WebResourceRequestedEventArgs e)
+                {
+                    var path = new Uri(e.Request.Uri).AbsolutePath;
+                    if (path == "/folder/preparation/")
+                    {
+                        var page = """
+                        <html><body><a href='/folder/preparation/'>Prepared fixture</a>
+                        <a class='js-letter-list-item' data-unread='false' href='/__prepared_read'><span>Sender</span><span>Read mail</span><span>Preview</span><time datetime='2027-01-04T12:00:00Z'>04.01.27</time></a>
+                        <a class='js-letter-list-item' data-unread='true' href='/__prepared_unread'><span>Sender</span><span>Unread mail</span><span>Preview</span><time datetime='2027-01-03T12:00:00Z'>03.01.27</time></a>
+                        <a class='js-letter-list-item' href='/__prepared_unknown'><span>Sender</span><span>Unknown mail</span><span>Preview</span><time datetime='2027-01-02T12:00:00Z'>02.01.27</time></a>
+                        <a class='js-letter-list-item letter-list-item_read' href='/__prepared_slow'><span>Sender</span><span>Slow read mail</span><span>Preview</span><time datetime='2027-01-01T12:00:00Z'>01.01.27</time></a>
+                        </body></html>
+                        """;
+                        e.Response = b.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(page)), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store"); return;
+                    }
+                    if (!path.StartsWith("/__prepared_", StringComparison.Ordinal)) return;
+                    preparationReads[path] = preparationReads.GetValueOrDefault(path) + 1;
+                    using var deferral = e.GetDeferral();
+                    if (path == "/__prepared_slow" && delayPreparation) { slowPreparationStarted.TrySetResult(); await Task.Delay(1800); }
+                    var bodyHtml = "<html><body><div class='letter-body__body'>Prepared clean body " + path + "</div></body></html>";
+                    e.Response = b.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(bodyHtml)), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
+                }
+                b.View.CoreWebView2.WebResourceRequested += PreparationFixture;
+                b.ReaderState = new ReaderPosition([], null, 0, 0, "https://e.mail.ru/folder/preparation/");
+                var preparedPane = new ReaderPane(b, () => { }); host.Children.Add(preparedPane); await preparedPane.Start();
+                await preparedPane.BackgroundRefresh.WaitAsync(TimeSpan.FromSeconds(8));
+                await preparedPane.BackgroundPreparation.WaitAsync(TimeSpan.FromSeconds(8));
+                var preparedList = ((DockPanel)preparedPane.Children[0]).Children.OfType<ListBox>().Single();
+                var readRow = preparedList.Items.Cast<ReaderLetter>().Single(x => x.Subject == "Read mail");
+                var unreadRow = preparedList.Items.Cast<ReaderLetter>().Single(x => x.Subject == "Unread mail");
+                var slowRow = preparedList.Items.Cast<ReaderLetter>().Single(x => x.Subject == "Slow read mail");
+                Check(readRow.Unread == false && unreadRow.Unread == true && preparedList.Items.Cast<ReaderLetter>().Single(x => x.Subject == "Unknown mail").Unread is null, "parser preserves confirmed read, unread and unknown states separately");
+                Check(preparationReads.GetValueOrDefault("/__prepared_read") == 1 && preparationReads.GetValueOrDefault("/__prepared_slow") == 1 && !preparationReads.ContainsKey("/__prepared_unread") && !preparationReads.ContainsKey("/__prepared_unknown"), "background collection opens only confirmed already-read messages");
+                var readyNavigationCount = preparationReads.Values.Sum();
+                var readyTimer = System.Diagnostics.Stopwatch.StartNew(); preparedList.SelectedItem = readRow;
+                var preparedBody = (StackPanel)((ScrollViewer)((DockPanel)preparedPane.Children[1]).Children[1]).Content;
+                Check(readyTimer.ElapsedMilliseconds < 250 && !preparedPane.IsLoading && preparedPane.BackgroundMessageRefresh.IsCompleted && preparedBody.Children.OfType<TextBlock>().Any(x => x.Text == "Prepared clean body /__prepared_read") && preparationReads.Values.Sum() == readyNavigationCount, "prepared unselected message renders immediately on first selection with no network read");
+                b.ReaderData.Prepared.Invalidate([slowRow]); delayPreparation = true;
+                await slowPreparationStarted.Task.WaitAsync(TimeSpan.FromSeconds(6));
+                preparedList.SelectedItem = unreadRow;
+                await preparedPane.BackgroundMessageRefresh.WaitAsync(TimeSpan.FromSeconds(5));
+                Check(preparedBody.Children.OfType<TextBlock>().Any(x => x.Text == "Prepared clean body /__prepared_unread") && preparationReads.GetValueOrDefault("/__prepared_unread") == 1, "foreground selection cancels a slow preparation and renders the explicitly chosen unread message");
+                preparedPane.Close(); host.Children.Remove(preparedPane); await preparedPane.BackgroundPreparation;
+                b.View.CoreWebView2.WebResourceRequested -= PreparationFixture;
+                Check(b.ReaderData.Prepared.Get(readRow) is not null, "prepared profile structures survive closing the renderer for account switching");
+                var hydrationUnread = unreadRow with { Url = "https://e.mail.ru/__prepared_disk_only" };
+                b.Cache.Save(hydrationUnread, [new ReaderBlock("Encrypted local structure", "")]);
+                var beforeHydrationNavigation = b.View.CoreWebView2.Source;
+                await b.ReaderData.HydratePrepared([hydrationUnread], CancellationToken.None);
+                Check(b.ReaderData.Prepared.Get(hydrationUnread)?.Blocks[0].Text == "Encrypted local structure" && b.View.CoreWebView2.Source == beforeHydrationNavigation, "preparing stored unread mail uses encrypted local data without a website navigation");
+                await b.ClearData(); Check(b.ReaderData.Prepared.Count == 0 && b.Cache.List().Count == 0, "clearing a profile removes ready structures as well as encrypted documents"); b.ReaderState = null;
                 a.Cache.Clear();
                 Console.WriteLine("Checking whole-mailbox scan with synthetic folders…");
                 var batchResult = await a.ReaderData.CacheMailbox(_ => { }, _ => { }, CancellationToken.None);

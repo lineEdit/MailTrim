@@ -191,7 +191,7 @@ public sealed class BrowserSession : IDisposable
     }
     public async Task ClearData()
     {
-        ReaderState = null; ReaderReplyOpen = false; Cache.Clear();
+        ReaderState = null; ReaderReplyOpen = false; readerData?.Prepared.Clear(); Cache.Clear();
         foreach (var p in popups.ToArray()) p.Window.Close();
         View.CoreWebView2.Stop();
         // Navigate away before wiping so the loaded mail page cannot repopulate its session.
