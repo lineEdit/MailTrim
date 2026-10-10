@@ -15,7 +15,7 @@ internal static class Program
     [STAThread]
     public static int Main(string[] args)
     {
-        if (args.Length != 1 && !(args.Length == 2 && args[1] is "--images-only" or "--gmail-only" or "--groups-only")) { Console.Error.WriteLine("Pass an empty scratch directory for test data; optionally --images-only, --gmail-only or --groups-only."); return 2; }
+        if (args.Length != 1 && !(args.Length == 2 && args[1] is "--images-only" or "--gmail-only" or "--groups-only" or "--ads-only")) { Console.Error.WriteLine("Pass an empty scratch directory for test data; optionally --images-only, --gmail-only, --groups-only or --ads-only."); return 2; }
         var root = Path.GetFullPath(args[0]);
         if (Directory.Exists(root) && Directory.EnumerateFileSystemEntries(root).Any()) { Console.Error.WriteLine("Test directory must be empty."); return 2; }
         var result = 1;
@@ -78,7 +78,7 @@ internal static class Program
                 await a.Initialize(id); await b.Initialize(secondProfileId);
                 a.View.CoreWebView2.Stop(); b.View.CoreWebView2.Stop();
                 ConfigureFixture(a); ConfigureFixture(b);
-                if (args.Length == 2)
+                if (args.Length == 2 && args[1] == "--images-only")
                 {
                     await Navigate(a, "https://e.mail.ru/inbox/");
                     await ImageChecks.Run(a, host, Check); result = 0; return;
@@ -194,6 +194,60 @@ internal static class Program
                 await WaitForScript(a, "document.getElementById('store-dialog').getBoundingClientRect().height > 0 && document.getElementById('store-shade').getBoundingClientRect().height > 0");
                 Check(true, "reused promo panel becomes visible when changed into a working dialog");
                 await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('store-portal').remove(); document.getElementById('working-dialog').remove()");
+
+                await a.View.CoreWebView2.ExecuteScriptAsync("""
+                    document.body.insertAdjacentHTML('beforeend', `<div id="partial-store-portal"><div id="partial-store-shade" style="position:fixed;inset:0;background:#8888"></div>
+                    <div id="partial-store-shell" role="dialog" style="position:fixed;left:100px;top:50px;width:420px;min-height:40px;background:white;border-radius:20px">
+                      <button aria-label="Закрыть" style="position:absolute;right:8px;top:8px;width:32px;height:32px" onclick="window.partialClose=(window.partialClose||0)+1;document.getElementById('partial-store-content')?.remove()">×</button>
+                      <div id="partial-store-content" style="padding:16px;margin-top:100px;height:250px"><h2>Актуальная версия Почты в RuStore</h2><p>Установите или обновите приложение Mail на Android через RuStore</p><button>Узнать больше</button></div>
+                    </div></div>`);
+                    requestAnimationFrame(() => { window.partialLeaked = document.getElementById('partial-store-shell').getBoundingClientRect().height > 0 || document.getElementById('partial-store-shade').getBoundingClientRect().height > 0; });
+                    """);
+                await WaitForScript(a, "window.partialLeaked !== undefined");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("window.partialClose === 1 && !document.getElementById('partial-store-content') && !partialLeaked") == "true", "close outside promo content removes content while the complete shell and shade stay hidden before paint");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.body.dataset.testRefresh='again'; document.getElementById('partial-store-shell').style.minHeight='42px'");
+                await WaitForScript(a, "document.getElementById('partial-store-shell').getBoundingClientRect().height === 0 && document.getElementById('partial-store-shade').getBoundingClientRect().height === 0");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("window.partialClose === 1") == "true", "identified empty shell survives later scans without clicking close repeatedly");
+                await a.View.CoreWebView2.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, false, false));
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('partial-store-shell').getBoundingClientRect().height > 0 && document.getElementById('partial-store-shade').getBoundingClientRect().height > 0") == "true", "pausing filters restores tracked empty shell and shade");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('partial-store-portal').remove()");
+                await a.View.CoreWebView2.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, true, false));
+
+                await a.View.CoreWebView2.ExecuteScriptAsync("""
+                    document.body.insertAdjacentHTML('beforeend', `<div id="reuse-store-portal"><div id="reuse-store-shade" style="position:fixed;inset:0;background:#8888"></div>
+                    <div id="reuse-store-shell" role="dialog" style="position:fixed;left:100px;top:50px;width:420px;min-height:40px;background:white">
+                      <button aria-label="Закрыть" style="position:absolute;right:8px;top:8px;width:32px;height:32px" onclick="window.reuseClicked=true">×</button>
+                      <div id="reuse-store-content" style="padding:16px;margin-top:100px;height:250px"><h2>Актуальная версия Почты в RuStore</h2><p>Установите или обновите приложение Mail на Android через RuStore</p><button>Узнать больше</button></div>
+                    </div></div>`);
+                    """);
+                await WaitForScript(a, "document.getElementById('reuse-store-shell').getBoundingClientRect().height === 0");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('reuse-store-content').remove(); document.getElementById('reuse-store-shell').style.minHeight='43px'");
+                await WaitForScript(a, "document.getElementById('reuse-store-shade').getBoundingClientRect().height === 0");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('reuse-store-shell').insertAdjacentHTML('beforeend','<h2>Подтвердите действие</h2><input value=Protected><button>OK</button>')");
+                await WaitForScript(a, "document.getElementById('reuse-store-shell').getBoundingClientRect().height > 0 && document.getElementById('reuse-store-shade').getBoundingClientRect().height > 0");
+                Check(true, "tracked empty promo island is restored when reused for a working dialog");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('reuse-store-portal').remove()");
+
+                await a.View.CoreWebView2.ExecuteScriptAsync("""
+                    document.body.insertAdjacentHTML('beforeend', `<div id="shared-store-portal"><div style="position:fixed;inset:0;background:#8888"></div>
+                    <div id="shared-store-offer" role="dialog" style="position:fixed;left:100px;top:50px;width:420px;height:500px;background:white"><h2>Актуальная версия Почты в RuStore</h2><p>Установите или обновите приложение Mail на Android через RuStore</p><button>Узнать больше</button></div></div>`);
+                    """);
+                await WaitForScript(a, "document.getElementById('shared-store-offer').getBoundingClientRect().height === 0");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('shared-store-portal').insertAdjacentHTML('beforeend','<div id=shared-working-dialog role=dialog style=\"position:fixed;left:600px;top:50px;width:300px;height:300px;background:white\"><h2>Подтвердите действие</h2><button>OK</button></div>')");
+                await WaitForScript(a, "document.getElementById('shared-working-dialog').getBoundingClientRect().height > 0 && document.getElementById('shared-store-offer').getBoundingClientRect().height === 0");
+                Check(true, "a working dialog added to a previously isolated portal is visible while the original offer remains hidden");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('shared-store-portal').remove()");
+
+                await a.View.CoreWebView2.ExecuteScriptAsync("""
+                    document.body.insertAdjacentHTML('beforeend', `<div id="deep-store-overlay" style="position:fixed;inset:0;background:#8888"><div id="deep-store-frame" style="position:absolute;left:100px;top:50px;width:420px;min-height:40px;background:white">
+                    <button aria-label="Закрыть" style="position:absolute;right:8px;top:8px;width:32px;height:32px">×</button>${'<div>'.repeat(7)}<div style="height:250px;padding:20px"><h2>Актуальная версия Почты в RuStore</h2><p>Установите или обновите приложение Mail на Android через RuStore</p><button>Узнать больше</button></div>${'</div>'.repeat(7)}</div></div>`);
+                    requestAnimationFrame(() => { window.deepShellLeaked = document.getElementById('deep-store-frame').getBoundingClientRect().height > 0 || document.getElementById('deep-store-overlay').getBoundingClientRect().height > 0; });
+                    """);
+                await WaitForScript(a, "window.deepShellLeaked !== undefined");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("!window.deepShellLeaked") == "true", "deeply nested promo content hides its outer frame and viewport shade before paint");
+                await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('deep-store-overlay').remove()");
+
+                if (args.Length == 2 && args[1] == "--ads-only") { result = 0; return; }
 
                 await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('late-ad').innerHTML = '<a href=/inbox/789><span>Реклама 6+</span>Real message replacing virtualized ad</a>'");
                 await WaitForScript(a, "document.getElementById('late-ad').getBoundingClientRect().height > 0");

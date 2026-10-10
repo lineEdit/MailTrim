@@ -97,6 +97,23 @@ public static class CosmeticScript
             apply(); // Reserve zero height before a replacement creative gets its first paint.
           };
           const promos = new Set();
+          const promoIslands = new Map();
+          const storeTitle = /^Актуальная\s*версия\s*Почты\s*в\s*RuStore$/iu;
+          const promoText = node => (node.textContent || '').replace(/[\u200b-\u200d\ufeff]/g, '').trim();
+          const closeLabel = text => /^(?:закрыть|close|×|✕|x)$/iu.test(text.trim());
+          const overlayProtected = protectedContent + ',.thread,.letter-list__react,.llct,.letter-list,.js-letter-list-item,[role="toolbar"],[role="alert"],form,nav';
+          const hasStoreTitle = node => [node,...node.querySelectorAll('h1,h2,h3,div,span')].some(e => storeTitle.test(promoText(e)));
+          // Once positively identified, an empty shell is still the same promo. Release
+          // it as soon as the site reuses the island for meaningful working content.
+          const restorePromoIslands = () => {
+            for (const [root, state] of promoIslands) {
+              const text = promoText(root);
+              if (!root.isConnected || root.matches(overlayProtected) || root.querySelector(overlayProtected)
+                  || [...root.querySelectorAll('[role="dialog"]')].some(dialog => !state.dialogs.has(dialog))
+                  || (!hasStoreTitle(root) && text && !closeLabel(text))) { promoIslands.delete(root); continue; }
+              root.setAttribute('data-mailtrim-promo','true'); promos.add(root);
+            }
+          };
           const attemptedClose = new WeakSet();
           const expanded = new Set();
           const widened = new Set();
@@ -269,43 +286,54 @@ public static class CosmeticScript
             }
           };
           const dismissStorePromo = () => {
+            const decoration = node => {
+              if (node.matches(overlayProtected + ',[role="dialog"]') || node.querySelector(overlayProtected + ',[role="dialog"]')) return false;
+              const text = promoText(node);
+              if (text && !closeLabel(text)) return false;
+              const controls = [...node.querySelectorAll('button,[role="button"],a')];
+              if (node.matches('button,[role="button"],a')) controls.push(node);
+              return controls.every(control => closeLabel(control.getAttribute('aria-label') || control.getAttribute('title') || promoText(control))
+                || !promoText(control) && !!control.querySelector('svg') && !control.matches('a'));
+            };
             for (const heading of document.querySelectorAll('h1,h2,h3,div,span')) {
-              if (heading.closest(protectedContent)) continue;
-              const title = (heading.textContent || '').replace(/[\u200b-\u200d\ufeff]/g, '').trim();
-              if (!/^Актуальная\s*версия\s*Почты\s*в\s*RuStore$/iu.test(title)) continue;
+              if (heading.closest(protectedContent) || !storeTitle.test(promoText(heading))) continue;
               for (let panel = heading.parentElement, depth = 0; panel && depth < 10; panel = panel.parentElement, depth++) {
-                if (panel.matches('body,main,#app-canvas,[role="main"]') || panel.querySelector(protectedContent)) break;
-                const text = (panel.textContent || '').replace(/\s+/g, ' ');
+                if (panel.matches('body,main,#app-canvas,[role="main"]') || panel.querySelector(overlayProtected + ',[role="dialog"]')) break;
+                const text = promoText(panel).replace(/\s+/g, ' ');
                 const r = panel.getBoundingClientRect();
                 if (text.length > 1500 || r.width > 650 || r.height > 850) break;
-                if (!/Установите\s*или\s*обновите\s*приложение/iu.test(text) || !/Android/iu.test(text) || r.width < 200 || r.height < 150) continue;
-                const close = [...new Set([...panel.querySelectorAll('button,[role="button"],[aria-label],[title],svg')].map(node =>
+                if (!/Установите\s*или\s*обновите\s*приложение/iu.test(text) || !/Android/iu.test(text) || r.width < 200 || r.height < 24) continue;
+                let root = panel;
+                // Close controls and a blank shade are decoration, not extra dialog
+                // content. Include every isolated wrapper so a white frame cannot remain.
+                for (let node = panel.parentElement, n = 0; node && n < 10; node = node.parentElement, n++) {
+                  if (node.matches('body,main,#app-canvas,[role="main"]') || node.querySelector(overlayProtected)) break;
+                  const siblings = [...node.children].filter(child => !child.contains(root));
+                  const ownText = [...node.childNodes].filter(child => child.nodeType === 3).map(child => child.textContent).join('').trim();
+                  if (ownText && !closeLabel(ownText) || !siblings.every(decoration)) break;
+                  root = node;
+                }
+                let frame = panel;
+                for (let node = panel.parentElement; node && root.contains(node); node = node.parentElement) {
+                  const b = node.getBoundingClientRect();
+                  if (b.width >= 200 && b.width <= 650 && b.height >= 24 && b.height <= 850) frame = node;
+                  if (node === root) break;
+                }
+                const bounds = frame.getBoundingClientRect();
+                const close = [...new Set([...root.querySelectorAll('button,[role="button"],[aria-label],[title],svg')].map(node =>
                   node.matches('svg') ? node.closest('button,[role="button"],[aria-label],[title]') || node.parentElement : node))].filter(button => {
                   if (!(button instanceof HTMLElement)) return false;
-                  const label = (button.getAttribute('aria-label') || button.getAttribute('title') || button.textContent || '').trim();
+                  const label = (button.getAttribute('aria-label') || button.getAttribute('title') || promoText(button)).trim();
                   const b = button.getBoundingClientRect();
-                  const corner = b.width > 0 && b.width <= 48 && b.height <= 48 && b.top < r.top + 70 && b.right > r.right - 70;
-                  return corner && (/^(?:закрыть|close|×|✕|x)$/iu.test(label) || (!label && button.querySelector('svg')));
+                  // Locate the corner against the visible panel, not a full-screen shade.
+                  const corner = b.width > 0 && b.width <= 48 && b.height <= 48
+                    && b.top < bounds.top + 70 && b.right > bounds.right - 70
+                    && b.left < bounds.right + 48 && b.bottom > bounds.top - 48;
+                  return corner && (closeLabel(label) || (!label && button.querySelector('svg')));
                 });
-                if (close.length === 1 && !attemptedClose.has(panel)) { attemptedClose.add(panel); close[0].click(); }
-                if (!panel.isConnected) break;
-                // Hide only this identified offer and its isolated overlay island. A close
-                // handler may be absent or asynchronous; never leave the mail behind a shade.
-                const hide = node => { node.setAttribute('data-mailtrim-promo','true'); promos.add(node); };
-                hide(panel);
-                for (let node = panel.parentElement, depth = 0; node && depth < 5; node = node.parentElement, depth++) {
-                  if (node.matches('body,main,#app-canvas,[role="main"]') || node.querySelector(protectedContent)) break;
-                  if ((node.textContent || '').replace(/\s/g,'') !== text.replace(/\s/g,'')) break;
-                  const bounds = node.getBoundingClientRect();
-                  if (getComputedStyle(node).position === 'fixed' && bounds.width >= innerWidth * .8 && bounds.height >= innerHeight * .8) { hide(node); break; }
-                  // Some portals render the backdrop and dialog as siblings.
-                  const siblings = [...node.children].filter(child => !child.contains(panel));
-                  if (siblings.length && siblings.every(child => {
-                    const b = child.getBoundingClientRect();
-                    return !child.textContent.trim() && !child.querySelector('button,a,input,textarea,[role="dialog"]')
-                      && getComputedStyle(child).position === 'fixed' && b.width >= innerWidth * .8 && b.height >= innerHeight * .8;
-                  })) { for (const sibling of siblings) hide(sibling); break; }
-                }
+                if (!promoIslands.has(root)) promoIslands.set(root, { dialogs: new Set(root.querySelectorAll('[role="dialog"]')) });
+                if (close.length === 1 && !attemptedClose.has(root)) { attemptedClose.add(root); close[0].click(); }
+                if (root.isConnected) { root.setAttribute('data-mailtrim-promo','true'); promos.add(root); }
                 break;
               }
             }
@@ -330,6 +358,7 @@ public static class CosmeticScript
             marked.clear();
             for (const node of promos) node.removeAttribute('data-mailtrim-promo');
             promos.clear();
+            if (compactLayout) restorePromoIslands();
             if (labeledAds) { hideTopPreloader(); hideLabeledAds(); }
             if (compactLayout) dismissStorePromo();
           };
@@ -378,7 +407,7 @@ public static class CosmeticScript
             apply(); scan();
             observer = new MutationObserver(changed);
             observer.observe(document.documentElement, {childList:true, subtree:true, characterData:true,
-              attributes:true, attributeOldValue:true, attributeFilter:['class','style','href','aria-label','hidden']});
+              attributes:true, attributeOldValue:true, attributeFilter:['class','style','href','aria-label','title','role','hidden']});
             window.addEventListener('resize', schedule);
             document.addEventListener('load', schedule, true);
           };
@@ -395,6 +424,7 @@ public static class CosmeticScript
             for (const node of widened) node.removeAttribute('data-mailtrim-wide');
             for (const node of expanded) node.removeAttribute('data-mailtrim-fill');
             for (const node of stretched) { node.removeAttribute('data-mailtrim-viewport'); node.style.removeProperty('--mailtrim-top'); }
+            promoIslands.clear();
             document.getElementById(id)?.remove();
           };
           // WebView2 injects this before page scripts. Attach CSS as soon as the root exists.
