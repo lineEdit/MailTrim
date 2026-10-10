@@ -33,6 +33,13 @@ public sealed class BrowserSession : IDisposable
     private bool clearing;
     private int blocked;
     public double ReaderListWidth => double.IsFinite(store.Settings.ReaderListWidth) ? Math.Clamp(store.Settings.ReaderListWidth, 260, 520) : 310;
+    public bool ReaderFoldersVisible => store.Settings.ReaderFoldersVisible;
+    public void SaveReaderFoldersVisible(bool visible)
+    {
+        var previous = store.Settings.ReaderFoldersVisible;
+        store.Settings.ReaderFoldersVisible = visible;
+        try { store.Save(); } catch { store.Settings.ReaderFoldersVisible = previous; status("Не удалось сохранить видимость папок."); }
+    }
     public void SaveReaderListWidth(double width)
     {
         if (!double.IsFinite(width)) return;

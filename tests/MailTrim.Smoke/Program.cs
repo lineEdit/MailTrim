@@ -337,7 +337,13 @@ internal static class Program
                 await pane.Start();
                 var readerList = ((DockPanel)pane.Children[0]).Children.OfType<ListBox>().Single();
                 Check(readerList.Items.Count == 1, "native reader displays extracted list");
-                pane.ColumnDefinitions[0].Width = new GridLength(420); pane.UpdateLayout();
+                var folderNavigation = pane.Children.OfType<DockPanel>().Single(p => p.Children.OfType<ListBox>().Any(l => l.Name == "ReaderFolders"));
+                var folderList = folderNavigation.Children.OfType<ListBox>().Single();
+                Check(folderList.Items.Cast<ReaderFolder>().Any(f => f.Name == "Документы") && folderList.Items.Count == 7 && folderNavigation.Visibility == Visibility.Visible, "standard and named custom folders are directly visible without a dropdown");
+                var folderToggle = ((StackPanel)((DockPanel)pane.Children[0]).Children[0]).Children.OfType<DockPanel>().First().Children.OfType<Button>().Single();
+                folderToggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); pane.UpdateLayout();
+                Check(folderNavigation.Visibility == Visibility.Collapsed && pane.ColumnDefinitions[0].ActualWidth == 0 && !new LocalStore(root).Settings.ReaderFoldersVisible, "collapsing navigation returns its entire width to the letter and persists preference");
+                pane.ColumnDefinitions[1].Width = new GridLength(420); pane.UpdateLayout();
                 var readerSplitter = pane.Children.OfType<GridSplitter>().Single();
                 readerSplitter.RaiseEvent(new System.Windows.Controls.Primitives.DragCompletedEventArgs(110, 0, false)
                     { RoutedEvent = System.Windows.Controls.Primitives.Thumb.DragCompletedEvent });
@@ -406,7 +412,14 @@ internal static class Program
                     Check(searchStopped, "cache search respects cancellation");
                 }
                 var resumed = new ReaderPane(a, () => { }); host.Children.Add(resumed); await resumed.Start();
-                Check(resumed.ColumnDefinitions[0].Width.Value == 420, "reopened reader restores customized list width");
+                Check(resumed.ColumnDefinitions[1].Width.Value == 420 && resumed.ColumnDefinitions[0].Width.Value == 0, "reopened reader restores list width and collapsed folder navigation");
+                var resumedToggle = ((StackPanel)((DockPanel)resumed.Children[0]).Children[0]).Children.OfType<DockPanel>().First().Children.OfType<Button>().Single();
+                resumedToggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Check(new LocalStore(root).Settings.ReaderFoldersVisible && resumed.ColumnDefinitions[0].Width.Value == 164, "navigation can be expanded again after reopening");
+                resumed.UpdateLayout();
+                var folderBitmap = new RenderTargetBitmap((int)resumed.ActualWidth, (int)resumed.ActualHeight, 96, 96, PixelFormats.Pbgra32); folderBitmap.Render(resumed);
+                var folderEncoder = new PngBitmapEncoder(); folderEncoder.Frames.Add(BitmapFrame.Create(folderBitmap));
+                using (var capture = File.Create(Path.Combine(root, "reader-folders.png"))) folderEncoder.Save(capture);
                 Check(((DockPanel)resumed.Children[0]).Children.OfType<ListBox>().Single().Items.Count == 1, "reader restores cached list after reopening");
                 Check(((DockPanel)resumed.Children[0]).Children.OfType<ListBox>().Single().SelectedItem is ReaderLetter, "reader restores selected message independently for profile");
                 var restoredScroll = (ScrollViewer)((DockPanel)resumed.Children[1]).Children[1];
@@ -491,17 +504,42 @@ internal static class Program
                 await freshPane.SynchronizeLive(true);
                 Check(freshList.Items.Count == 0 && b.Cache.List().Count == 4, "confirmed empty live folder clears the view while preserving offline copies");
                 confirmedEmptyInbox = false;
-                var liveFolders = ((StackPanel)((DockPanel)freshPane.Children[0]).Children[0]).Children.OfType<ComboBox>().Single();
+                var liveFolders = freshPane.Children.OfType<DockPanel>().SelectMany(p => p.Children.OfType<ListBox>()).Single(l => l.Name == "ReaderFolders");
                 liveFolders.SelectedItem = liveFolders.Items.Cast<ReaderFolder>().Single(x => x.Name == "Отправленные");
                 for (var folderWait = 0; folderWait < 100 && freshPane.IsLoading; folderWait++) await Task.Delay(100);
                 Check(freshList.Items.Count == 1 && new Uri(b.View.CoreWebView2.Source).AbsolutePath == "/sent/", "native folder switch reads the official sent page instead of selecting a cache category");
+                await b.View.CoreWebView2.ExecuteScriptAsync("document.body.insertAdjacentHTML('beforeend', '<a href=/folder/fake/?action=delete>Forbidden action</a><a href=https://example.com/folder/external/>External folder</a>')");
+                var discoveredFolders = await b.ReaderData.FolderDetails(CancellationToken.None);
+                Check(discoveredFolders.Count == 1 && discoveredFolders[0].Name == "Документы", "folder parser keeps the real label without unread badge and excludes external links and action URLs");
+                var slowFolderStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                async void SlowFolderFixture(object? sender, CoreWebView2WebResourceRequestedEventArgs e)
+                {
+                    if (new Uri(e.Request.Uri).AbsolutePath != "/archive/") return;
+                    using var deferral = e.GetDeferral(); slowFolderStarted.TrySetResult(); await Task.Delay(1200);
+                    e.Response = b.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes("<html><body><a class='js-letter-list-item' href='/__old_folder'><span>Old folder</span><span>Must not replace selected folder</span></a></body></html>")), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
+                }
+                b.View.CoreWebView2.WebResourceRequested += SlowFolderFixture;
+                liveFolders.SelectedItem = liveFolders.Items.Cast<ReaderFolder>().Single(x => x.Name == "Архив");
+                var oldFolderChange = freshPane.BackgroundFolderChange;
+                await slowFolderStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                liveFolders.SelectedItem = liveFolders.Items.Cast<ReaderFolder>().Single(x => x.Name == "Документы");
+                await freshPane.BackgroundFolderChange.WaitAsync(TimeSpan.FromSeconds(8));
+                await oldFolderChange.WaitAsync(TimeSpan.FromSeconds(8)); await Task.Delay(1300);
+                Check(!freshPane.IsLoading && freshList.IsEnabled && ((ReaderFolder)liveFolders.SelectedItem).Name == "Документы" && freshList.Items.Cast<ReaderLetter>().Single().Url.EndsWith("__mailtrim_reader_second") && new Uri(b.View.CoreWebView2.Source).AbsolutePath == "/folder/custom/", "rapid folder switching cancels old navigation and keeps only the latest selected folder data");
+                b.View.CoreWebView2.WebResourceRequested -= SlowFolderFixture;
+                freshPane.Close(); host.Children.Remove(freshPane);
+                var restoredFolderPane = new ReaderPane(b, () => { }); host.Children.Add(restoredFolderPane); await restoredFolderPane.Start();
+                await restoredFolderPane.BackgroundRefresh.WaitAsync(TimeSpan.FromSeconds(8));
+                var restoredFolders = restoredFolderPane.Children.OfType<DockPanel>().SelectMany(p => p.Children.OfType<ListBox>()).Single(l => l.Name == "ReaderFolders");
+                Check(((ReaderFolder)restoredFolders.SelectedItem).Name == "Документы" && new Uri(b.View.CoreWebView2.Source).AbsolutePath == "/folder/custom/", "returning to reading restores the selected custom folder and its website name");
+                restoredFolderPane.Close(); host.Children.Remove(restoredFolderPane);
                 var headerPath = Path.Combine(root, "ReaderCache", secondProfileId.ToString("N"), "headers.index");
                 Check(!Encoding.UTF8.GetString(File.ReadAllBytes(headerPath)).Contains("Fresh sender"), "refreshed mail headers are encrypted on disk");
-                freshPane.Close(); host.Children.Remove(freshPane); b.ReaderState = null;
+                b.ReaderState = null;
                 emptyInbox = true;
                 var offlinePane = new ReaderPane(b, () => { }); host.Children.Add(offlinePane); await offlinePane.Start();
                 await offlinePane.BackgroundRefresh.WaitAsync(TimeSpan.FromSeconds(15));
-                Check(((DockPanel)offlinePane.Children[0]).Children.OfType<ListBox>().Single().Items.Count == 4 && b.Cache.List().Count == 4, "empty or unauthenticated web response never erases cached mail");
+                Check(((DockPanel)offlinePane.Children[0]).Children.OfType<ListBox>().Single().Items.Count == 5 && b.Cache.List().Count == 5, "empty or unauthenticated web response never erases cached mail");
                 offlinePane.Close(); host.Children.Remove(offlinePane); emptyInbox = false;
                 refreshStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
                 var replyRefreshPane = new ReaderPane(b, () => { }); host.Children.Add(replyRefreshPane); await replyRefreshPane.Start();
@@ -698,7 +736,7 @@ internal static class Program
             if (new[] { "/inbox/", "/sent/", "/archive/", "/drafts/", "/spam/", "/trash/", "/folder/custom/" }.Contains(fixturePath))
             {
                 var messagePath = fixturePath == "/folder/custom/" ? "__mailtrim_reader_second" : "__mailtrim_reader";
-                var html = "<html><body><a href='/folder/custom/'>Custom</a><div style='height:80px;overflow-y:auto'><a class='js-letter-list-item' href='/" + messagePath + "'><span>Sender</span><span>Subject</span><span>Preview</span><span>Today</span></a><div style='height:200px'></div></div></body></html>";
+                var html = "<html><body><a href='/folder/custom/'><span class='nav__folder-name'>Документы</span><sup>12</sup></a><div style='height:80px;overflow-y:auto'><a class='js-letter-list-item' href='/" + messagePath + "'><span>Sender</span><span>Subject</span><span>Preview</span><span>Today</span></a><div style='height:200px'></div></div></body></html>";
                 e.Response = session.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(html)), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
             }            if (e.Request.Uri.EndsWith("/__mailtrim_slow_image", StringComparison.Ordinal))
             {

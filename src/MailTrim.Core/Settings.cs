@@ -34,6 +34,7 @@ public sealed class AppSettings
     public bool UseSiteNotifications { get; set; }
     public SavedWindowPosition? WindowPosition { get; set; }
     public double ReaderListWidth { get; set; } = 310;
+    public bool ReaderFoldersVisible { get; set; } = true;
 }
 
 // Win32 workspace coordinates, used only with Get/SetWindowPlacement.

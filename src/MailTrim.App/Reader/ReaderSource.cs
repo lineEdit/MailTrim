@@ -56,6 +56,25 @@ public sealed class ReaderSource(BrowserSession session)
       return {found:true,bottom};
     })()
     """;
+    public const string FolderDetails = """
+    (()=>{
+      if(location.origin!=='https://e.mail.ru')return [];
+      const result=new Map();
+      for(const a of document.querySelectorAll('a[href]')){
+        if(a.matches('.js-letter-list-item'))continue;
+        const u=new URL(a.href,location.href);
+        if(u.origin!==location.origin || u.search || u.hash || !/^\/(inbox|sent|drafts|archive|spam|trash|\d+|folder\/[^/]+)\/?$/.test(u.pathname))continue;
+        const copy=a.cloneNode(true);
+        copy.querySelectorAll('sup, .nav__folder-counter, .nav__folder-count, [data-testid="unread-count"], [aria-hidden="true"]').forEach(e=>e.remove());
+        const label=copy.querySelector('.nav__folder-name, .folder-name, [data-testid="folder-name"]');
+        const name=(label?.textContent || a.getAttribute('title') || a.getAttribute('aria-label') || copy.textContent || '').replace(/\s+/g,' ').trim().slice(0,100);
+        const url=u.origin+u.pathname.replace(/\/$/,'')+'/';
+        if(!result.has(url) || !result.get(url).name)result.set(url,{name,url});
+        if(result.size>=100)break;
+      }
+      return [...result.values()];
+    })()
+    """;
     public sealed record ScrollState(bool Found, bool Bottom);
     public sealed record BatchResult(int Saved, int Failed, int Folders, int UncertainFolders);
     public async Task<BatchResult> CacheMailbox(Action<string> progress, Action<ReaderLetter> discovered, CancellationToken token)

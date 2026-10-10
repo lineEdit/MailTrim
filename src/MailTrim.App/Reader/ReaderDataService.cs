@@ -75,6 +75,14 @@ public sealed class ReaderDataService : IDisposable
         ct.ThrowIfCancellationRequested();
         return (await source.Extract<List<string>>(ReaderSource.Folders) ?? []).Where(ReaderSource.IsFolder).Distinct().Take(100).ToList();
     }, token);
+    public Task<List<ReaderFolder>> FolderDetails(CancellationToken token) => Enqueue(async ct =>
+    {
+        ct.ThrowIfCancellationRequested();
+        return (await source.Extract<List<ReaderFolder>>(ReaderSource.FolderDetails) ?? [])
+            .Where(x => x is not null && ReaderSource.IsFolder(x.Url)).DistinctBy(x => x.Url.TrimEnd('/')).Take(100)
+            .Select(x => x with { Name = string.Concat((x.Name ?? "").Where(c => !char.IsControl(c))).Trim() })
+            .ToList();
+    }, token);
     public Task<ReaderDocument> ReadFresh(ReaderLetter letter, CancellationToken token) => Enqueue(async ct =>
     {
         letter = ReaderData.Clean(letter) ?? throw new IOException("mail_origin_required");

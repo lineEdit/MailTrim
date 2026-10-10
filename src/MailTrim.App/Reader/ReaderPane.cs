@@ -30,7 +30,12 @@ public sealed class ReaderPane : Grid
     public Task BackgroundRefresh { get; private set; } = Task.CompletedTask;
     public Task BackgroundMessageRefresh { get; private set; } = Task.CompletedTask;
     private bool liveList;
-    private readonly ComboBox folders = new() { DisplayMemberPath = "Name", Margin = new Thickness(4), ToolTip = "Папка Mail.ru" };
+    private readonly ListBox folders = new() { Name = "ReaderFolders", BorderThickness = new Thickness(0), Margin = new Thickness(4) };
+    private readonly DockPanel folderPanel = new();
+    private readonly TextBlock folderTitle = new() { Text = "Входящие", FontWeight = FontWeights.SemiBold, Margin = new Thickness(6, 0, 4, 0), TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
+    private readonly Button toggleFolders = new() { Name = "ToggleReaderFolders", Content = "☰", Padding = new Thickness(8, 4, 8, 4) };
+    private CancellationTokenSource? folderLoad;
+    public Task BackgroundFolderChange { get; private set; } = Task.CompletedTask;
     private string folderUrl = "https://e.mail.ru/inbox/";
     private DateTimeOffset nextReload = DateTimeOffset.UtcNow;
     private bool synchronizing;
@@ -60,8 +65,8 @@ public sealed class ReaderPane : Grid
         header.Children.Add(new TextBlock { Text = "Ответ в Mail.ru. Проверьте получателя и отправьте штатной кнопкой сайта. Если редактор не открылся, нажмите «Ответить» ниже.", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(8) });
         parent.Children.Remove(session.View);
         panel.Children.Add(session.View); session.View.Visibility = Visibility.Visible;
-        Children[0].IsEnabled = false; Children[1].Visibility = Visibility.Collapsed;
-        SetColumn(panel, 2); Children.Add(panel); replyPanel = panel; session.ReaderReplyOpen = true;
+        Children[0].IsEnabled = false; Children[1].Visibility = Visibility.Collapsed; folderPanel.IsEnabled = false;
+        SetColumn(panel, 3); Children.Add(panel); replyPanel = panel; session.ReaderReplyOpen = true;
     }
     private void DetachReply()
     {
@@ -70,7 +75,7 @@ public sealed class ReaderPane : Grid
         browserParent!.Children.Insert(Math.Min(browserIndex, browserParent.Children.Count), session.View);
         session.View.Visibility = browserVisibility;
         Children.Remove(replyPanel); replyPanel = null; browserParent = null;
-        Children[0].IsEnabled = true; Children[1].Visibility = Visibility.Visible;
+        Children[0].IsEnabled = true; Children[1].Visibility = Visibility.Visible; folderPanel.IsEnabled = true;
     }
     public async Task ReturnToReading(bool confirmed = false)
     {
@@ -100,7 +105,7 @@ public sealed class ReaderPane : Grid
     {
         if (openingOriginal || lifetime.IsCancellationRequested) return;
         openingOriginal = true; entryRefreshNeeded = false;
-        listRefresh?.Cancel(); messageRead?.Cancel(); batch?.Cancel();
+        listRefresh?.Cancel(); folderLoad?.Cancel(); messageRead?.Cancel(); batch?.Cancel();
         try
         {
             // Cancelled navigation must stop before the visible original starts navigating.
@@ -135,19 +140,54 @@ public sealed class ReaderPane : Grid
         </DataTemplate>
         """);
         list.ItemContainerStyle = new Style(typeof(ListBoxItem)) { Setters = { new Setter(Control.HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch) } };
+        ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(164) });
         ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(session.ReaderListWidth), MinWidth = 260, MaxWidth = 520 });
         ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(5) });
         ColumnDefinitions.Add(new ColumnDefinition { MinWidth = 300 });
-        var left = new DockPanel(); Children.Add(left);
+        var left = new DockPanel(); SetColumn(left, 1); Children.Add(left);
         var tools = new StackPanel(); DockPanel.SetDock(tools, Dock.Top); left.Children.Add(tools);
         foreach (var (name, path) in new[] { ("Входящие", "inbox"), ("Отправленные", "sent"), ("Черновики", "drafts"), ("Архив", "archive"), ("Спам", "spam"), ("Корзина", "trash") })
             folders.Items.Add(new ReaderFolder(name, "https://e.mail.ru/" + path + "/"));
-        folders.SelectedIndex = 0; tools.Children.Add(folders);
-        System.Windows.Automation.AutomationProperties.SetName(folders, "Папка почты");
+        folders.SelectedIndex = 0;
+        folders.SetResourceReference(Control.BackgroundProperty, "Surface"); folders.SetResourceReference(Control.ForegroundProperty, "Ink");
+        ScrollViewer.SetHorizontalScrollBarVisibility(folders, ScrollBarVisibility.Disabled);
+        folders.ItemTemplate = (DataTemplate)System.Windows.Markup.XamlReader.Parse("""
+        <DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+          <DockPanel ToolTip="{Binding Name}" Margin="4,8">
+            <TextBlock Text="{Binding Glyph}" FontFamily="Segoe MDL2 Assets" Width="24" VerticalAlignment="Center"/>
+            <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+          </DockPanel>
+        </DataTemplate>
+        """);
+        folders.ItemContainerStyle = (Style)System.Windows.Markup.XamlReader.Parse("""
+        <Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="ListBoxItem">
+          <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+          <Setter Property="Margin" Value="0,2"/>
+          <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBoxItem">
+            <Border x:Name="Row" CornerRadius="6" Background="Transparent" BorderThickness="3,0,0,0" BorderBrush="Transparent">
+              <ContentPresenter/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Row" Property="Background" Value="{DynamicResource Panel}"/></Trigger>
+              <Trigger Property="IsSelected" Value="True"><Setter TargetName="Row" Property="Background" Value="{DynamicResource Panel}"/><Setter TargetName="Row" Property="BorderBrush" Value="#3366EB"/><Setter Property="FontWeight" Value="SemiBold"/></Trigger>
+              <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="Row" Property="BorderBrush" Value="#3366EB"/></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate></Setter.Value></Setter>
+        </Style>
+        """);
+        folderPanel.SetResourceReference(BackgroundProperty, "Surface");
+        var folderHeading = new TextBlock { Text = "ПАПКИ", FontSize = 11, Margin = new Thickness(12, 12, 8, 6) };
+        folderHeading.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        DockPanel.SetDock(folderHeading, Dock.Top); folderPanel.Children.Add(folderHeading); folderPanel.Children.Add(folders);
+        var heading = new DockPanel(); tools.Children.Add(heading);
+        DockPanel.SetDock(toggleFolders, Dock.Left); heading.Children.Add(toggleFolders); heading.Children.Add(folderTitle);
+        toggleFolders.Click += (_, _) => SetFoldersVisible(folderPanel.Visibility != Visibility.Visible, true);
+        System.Windows.Automation.AutomationProperties.SetName(folders, "Папки почты");
         folders.SelectionChanged += async (_, _) => {
-            if (restoring || folders.SelectedItem is not ReaderFolder folder || folder.Url == folderUrl) return;
-            if (IsReplyVisible || loading) { restoring = true; folders.SelectedItem = folders.Items.Cast<ReaderFolder>().First(x => x.Url == folderUrl); restoring = false; return; }
-            await ChangeFolder(folder.Url);
+            if (restoring || folders.SelectedItem is not ReaderFolder folder || folder.Url.TrimEnd('/') == folderUrl.TrimEnd('/')) return;
+            if (IsReplyVisible || working && folderLoad is null) { SelectCurrentFolder(); notice.Text = "Дождитесь завершения операции перед сменой папки."; return; }
+            BackgroundFolderChange = ChangeFolder(folder.Url);
+            await BackgroundFolderChange;
         };
         var actions = new StackPanel { Orientation = Orientation.Horizontal };
         tools.Children.Add(actions);
@@ -174,9 +214,8 @@ public sealed class ReaderPane : Grid
             try { session.Cache.Clear(); cache.Clear(); notice.Text = "Кэш удалён."; } catch { notice.Text = "Не удалось очистить кэш."; }
         };
         notice.FontSize = 11; notice.MaxHeight = 72;
-        tools.Children.Add(new TextBlock { Text = "Почта с сайта · новые сверху", FontSize = 11, Margin = new Thickness(8, 2, 8, 4), TextWrapping = TextWrapping.Wrap });
         tools.Children.Add(notice); left.Children.Add(list);        list.SelectionChanged += async (_, _) => { if (!restoring && list.SelectedItem is ReaderLetter letter) await Read(letter); };
-        var right = new DockPanel(); SetColumn(right, 2); Children.Add(right);
+        var right = new DockPanel(); SetColumn(right, 3); Children.Add(right);
         var messageActions = new WrapPanel();
         DockPanel.SetDock(messageActions, Dock.Top); right.Children.Add(messageActions);
         foreach (var (label, action) in new[] { ("Ответить", ReaderAction.Reply), ("Прочитано", ReaderAction.MarkRead), ("В архив", ReaderAction.Archive), ("Удалить…", ReaderAction.Delete) })
@@ -192,11 +231,27 @@ public sealed class ReaderPane : Grid
         var splitter = new GridSplitter { Width = 5, HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch,
             ResizeDirection = GridResizeDirection.Columns, ResizeBehavior = GridResizeBehavior.PreviousAndNext, ShowsPreview = true,
             ToolTip = "Изменить ширину списка. Двойной щелчок — стандартная ширина.", Focusable = true };
-        splitter.SetResourceReference(BackgroundProperty, "Line"); SetColumn(splitter, 1); Children.Add(splitter);
+        splitter.SetResourceReference(BackgroundProperty, "Line"); SetColumn(splitter, 2); Children.Add(splitter);
+        Children.Add(folderPanel); SetFoldersVisible(session.ReaderFoldersVisible);
         System.Windows.Automation.AutomationProperties.SetName(splitter, "Ширина списка писем");
-        splitter.DragCompleted += (_, _) => session.SaveReaderListWidth(ColumnDefinitions[0].ActualWidth);
-        splitter.KeyUp += (_, _) => session.SaveReaderListWidth(ColumnDefinitions[0].ActualWidth);
-        splitter.MouseDoubleClick += (_, _) => { ColumnDefinitions[0].Width = new GridLength(310); session.SaveReaderListWidth(310); };
+        splitter.DragCompleted += (_, _) => session.SaveReaderListWidth(ColumnDefinitions[1].ActualWidth);
+        splitter.KeyUp += (_, _) => session.SaveReaderListWidth(ColumnDefinitions[1].ActualWidth);
+        splitter.MouseDoubleClick += (_, _) => { ColumnDefinitions[1].Width = new GridLength(310); session.SaveReaderListWidth(310); };
+    }
+    private void SetFoldersVisible(bool visible, bool save = false)
+    {
+        folderPanel.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        ColumnDefinitions[0].Width = new GridLength(visible ? 164 : 0);
+        toggleFolders.ToolTip = visible ? "Свернуть папки" : "Показать папки";
+        System.Windows.Automation.AutomationProperties.SetName(toggleFolders, toggleFolders.ToolTip.ToString());
+        if (save) session.SaveReaderFoldersVisible(visible);
+    }
+    private void SelectCurrentFolder()
+    {
+        var previous = restoring; restoring = true;
+        folders.SelectedItem = folders.Items.Cast<ReaderFolder>().First(x => x.Url.TrimEnd('/') == folderUrl.TrimEnd('/'));
+        folderTitle.Text = ((ReaderFolder)folders.SelectedItem).Name; folderTitle.ToolTip = folderTitle.Text;
+        restoring = previous;
     }
     public async Task PerformAction(ReaderAction action)
     {
@@ -238,7 +293,9 @@ public sealed class ReaderPane : Grid
     }
     private async Task ChangeFolder(string url)
     {
+        folderLoad?.Cancel(); working = loading = false;
         folderUrl = url; liveList = false; entryRefreshNeeded = false;
+        SelectCurrentFolder(); searchBox.Text = ""; scrollOffset = 0;
         listRefresh?.Cancel(); readGeneration++; messageRead?.Cancel(); messageRead = null; readingMessage = false; selectedLetter = null; history.Clear();
         letters.Clear(); knownLetters.Clear(); list.Items.Clear(); body.Children.Clear(); AddText("Выберите письмо.");
         await LoadList(true);
@@ -285,7 +342,7 @@ public sealed class ReaderPane : Grid
         {
             folderUrl = ReaderSource.IsFolder(position.Folder) ? position.Folder : folderUrl;
             if (!folders.Items.Cast<ReaderFolder>().Any(x => x.Url == folderUrl)) folders.Items.Add(new ReaderFolder("Папка Mail.ru", folderUrl));
-            restoring = true; folders.SelectedItem = folders.Items.Cast<ReaderFolder>().First(x => x.Url == folderUrl); restoring = false;
+            SelectCurrentFolder();
             foreach (var item in position.Letters) AddLetter(item);
             restoring = true;
             list.SelectedItem = letters.FirstOrDefault(x => x.Url == position.SelectedUrl);
@@ -346,9 +403,20 @@ public sealed class ReaderPane : Grid
     }
     private async Task DiscoverFolders(CancellationToken token)
     {
-        foreach (var url in await session.ReaderData.Folders(token))
-            if (!folders.Items.Cast<ReaderFolder>().Any(x => x.Url.TrimEnd('/') == url.TrimEnd('/')))
-                folders.Items.Add(new ReaderFolder("Папка " + new Uri(url).AbsolutePath.Trim('/'), url));
+        var found = await session.ReaderData.FolderDetails(token); token.ThrowIfCancellationRequested();
+        var previous = restoring; restoring = true;
+        try
+        {
+            foreach (var folder in found)
+            {
+                var existing = folders.Items.Cast<ReaderFolder>().FirstOrDefault(x => x.Url.TrimEnd('/') == folder.Url.TrimEnd('/'));
+                if (existing is null) folders.Items.Add(folder with { Name = folder.Name.Length > 0 ? folder.Name : "Папка " + new Uri(folder.Url).AbsolutePath.Trim('/') });
+                else if (folder.Name.Length > 0 && existing.Name != folder.Name && new Uri(folder.Url).AbsolutePath.Trim('/') is not ("inbox" or "sent" or "drafts" or "archive" or "spam" or "trash"))
+                    folders.Items[folders.Items.IndexOf(existing)] = folder;
+            }
+            SelectCurrentFolder();
+        }
+        finally { restoring = previous; }
     }
     private async Task RefreshOnEntry()
     {
@@ -434,7 +502,7 @@ public sealed class ReaderPane : Grid
     }
     public void Close()
     {
-        listRefresh?.Cancel();
+        listRefresh?.Cancel(); folderLoad?.Cancel();
         DetachReply();
         session.ReaderState = new ReaderPosition(letters.ToArray(), selectedLetter?.Url, FindScroll(list)?.VerticalOffset ?? 0,
             ((ScrollViewer)((DockPanel)Children[1]).Children[1]).VerticalOffset, folderUrl);
@@ -451,25 +519,28 @@ public sealed class ReaderPane : Grid
     {
         if (loading || IsReplyVisible || lifetime.IsCancellationRequested) return;
         if (searchBox.Text.Length > 0) await SearchSaved("");
+        using var request = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        folderLoad = request;
+        var requestedFolder = folderUrl;
         working = loading = true; list.IsEnabled = false;
         try
         {
-            notice.Text = "Загрузка…";
+            notice.Text = $"{folderTitle.Text} · загрузка…";
             entryRefreshNeeded = false;
             listRefresh?.Cancel();
             if (refresh) scrollOffset = 0;
             if (more) scrollOffset += 600;
-            var found = await session.ReaderData.LoadFolder(refresh, more, scrollOffset, folderUrl, lifetime.Token);
-            lifetime.Token.ThrowIfCancellationRequested();
+            var found = await session.ReaderData.LoadFolder(refresh, more, scrollOffset, requestedFolder, request.Token);
+            request.Token.ThrowIfCancellationRequested();
             if (refresh) MergeList(found, true);
             else foreach (var letter in found) AddLetter(letter);
             liveList = true; nextReload = DateTimeOffset.UtcNow.AddSeconds(60);
             notice.Text = $"С сайта · {DateTime.Now:HH:mm:ss} · писем: {letters.Count}";
-            await DiscoverFolders(lifetime.Token);
+            await DiscoverFolders(request.Token);
         }
         catch (OperationCanceledException) { }
-        catch { notice.Text = "Не удалось прочитать список. Откройте оригинал Mail.ru."; }
-        finally { working = loading = false; list.IsEnabled = true; }
+        catch { if (!request.IsCancellationRequested) notice.Text = "Не удалось прочитать список. Откройте оригинал Mail.ru."; }
+        finally { if (ReferenceEquals(folderLoad, request)) { folderLoad = null; working = loading = false; list.IsEnabled = true; } }
     }
     private Task Read(ReaderLetter letter, bool remember = true)
     {
@@ -555,4 +626,11 @@ public sealed class ReaderPane : Grid
     private void AddText(string text, double size = 16) => body.Children.Add(new TextBlock { Text = text, FontSize = size, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0,0,0,12) });
 }
  public sealed record ReaderPosition(ReaderLetter[] Letters, string? SelectedUrl, double ListOffset, double BodyOffset, string Folder = "https://e.mail.ru/inbox/");
- public sealed record ReaderFolder(string Name, string Url);
+ public sealed record ReaderFolder(string Name, string Url)
+ {
+     public string Glyph => new Uri(Url).AbsolutePath.Trim('/') switch
+     {
+         "inbox" => "\uE715", "sent" => "\uE724", "drafts" => "\uE70F", "archive" => "\uE7B8",
+         "spam" => "\uE7BA", "trash" => "\uE74D", _ => "\uE8B7"
+     };
+ }
