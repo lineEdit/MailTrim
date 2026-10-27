@@ -21,7 +21,9 @@ internal static class CloudPromoChecks
             var core = session.CloudView!.CoreWebView2;
             core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
             core.WebResourceRequested += (_, e) => e.Response = core.Environment.CreateWebResourceResponse(
-                new MemoryStream(Encoding.UTF8.GetBytes(Fixture)), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
+                new MemoryStream(Encoding.UTF8.GetBytes(new Uri(e.Request.Uri).AbsolutePath.Contains("__mailtrim_max", StringComparison.Ordinal) ? MaxFixture
+                    : new Uri(e.Request.Uri).AbsolutePath.Contains("__mailtrim_app", StringComparison.Ordinal) ? AppFixture : Fixture)),
+                200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
             session.SetActive(true); session.SetCloudOpen(true);
             await Navigate("https://cloud.mail.ru/home/__mailtrim_promos");
             await Until("window.cloudFirstFrame !== undefined");
@@ -80,6 +82,42 @@ internal static class CloudPromoChecks
             await Frame();
             check(await Is("document.getElementById('sidecar-shade').getBoundingClientRect().height > 0 && document.querySelector('#sidecar-shade input').getBoundingClientRect().height > 0 && document.getElementById('sidecar-panel').getBoundingClientRect().height === 0"),
                 "Cloud releases a reused backdrop containing a working sharing form while keeping the old offer hidden");
+            await Navigate("https://cloud.mail.ru/home/__mailtrim_max");
+            await Until("window.cloudFirstFrame !== undefined");
+            check(await Is("!cloudFirstFrame && document.getElementById('offer-panel').getBoundingClientRect().height === 0 && document.getElementById('offer-shade').getBoundingClientRect().height === 0 && !/erid|₽|руб|терабайт/iu.test(document.getElementById('offer-panel').textContent)"),
+                "Cloud MAX channel invitation without a price or ERID is hidden with its shade before the first frame");
+            check(await Is("document.getElementById('max-campaign-file').getBoundingClientRect().height > 0 && document.getElementById('max-preview').getBoundingClientRect().height > 0 && !window.cloudCtaClicks && !window.maxPreviewCtaClicks"),
+                "Cloud keeps MAX-themed file names and document contents visible without clicking subscribe controls");
+            check(await Is("['upload','rename','share','delete'].every(id => document.getElementById(id).getBoundingClientRect().height > 0) && !window.workingCloseClicks"),
+                "Cloud MAX promo filtering preserves working upload, rename, share and delete dialogs");
+            check(await Is("document.getElementById('ordinary-notice').getBoundingClientRect().height > 0 && document.getElementById('ordinary-notice').textContent.includes('Что нового в Mail') && !window.workingCloseClicks"),
+                "Cloud preserves an ordinary notice with the same heading when it contains no marketing invitation");
+            await core.ExecuteScriptAsync("""
+                window.maxReplacementLeaks=0;
+                let maxReplacements=0;
+                function replaceMaxOffer(){
+                  document.getElementById('offer-shade').outerHTML=window.cloudOfferMarkup;
+                  requestAnimationFrame(()=>{
+                    if(document.getElementById('offer-shade').getBoundingClientRect().height>0 || document.getElementById('offer-panel').getBoundingClientRect().height>0)window.maxReplacementLeaks++;
+                    if(++maxReplacements<5)replaceMaxOffer();else window.maxReplacementsDone=true;
+                  });
+                }
+                replaceMaxOffer();
+                """);
+            await Until("window.maxReplacementsDone === true");
+            check(await Is("maxReplacementLeaks === 0 && !window.cloudCtaClicks"),
+                "Cloud MAX invitations reinserted by the SPA remain hidden at every observed frame");
+            await core.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, false, false));
+            check(await Is("document.getElementById('offer-panel').getBoundingClientRect().height > 0 && document.getElementById('offer-shade').getBoundingClientRect().height > 0"),
+                "pausing cosmetic filtering restores a MAX invitation and its shade");
+            await core.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, true, false));
+            await Frame();
+            check(await Is("document.getElementById('offer-panel').getBoundingClientRect().height === 0 && document.getElementById('offer-shade').getBoundingClientRect().height === 0 && document.getElementById('max-preview').getBoundingClientRect().height > 0 && !window.cloudCtaClicks"),
+                "Cloud filtering resumes MAX promo cleanup while preserving its quoted preview");
+            await Navigate("https://cloud.mail.ru/home/__mailtrim_app");
+            await Until("window.cloudFirstFrame !== undefined");
+            check(await Is("!cloudFirstFrame && document.getElementById('offer-panel').getBoundingClientRect().height === 0 && document.getElementById('offer-shade').getBoundingClientRect().height === 0 && !window.cloudCtaClicks && !/erid|₽|руб/iu.test(document.getElementById('offer-panel').textContent)"),
+                "Cloud app-install invitation without a price or ERID is hidden before the first frame without activating install");
             await Navigate("https://account.mail.ru/login/__mailtrim_cloud_promos");
             await Until("window.cloudFirstFrame !== undefined");
             check(await Is("cloudFirstFrame && document.getElementById('offer-panel').getBoundingClientRect().height > 0 && document.getElementById('auth-password').getBoundingClientRect().height > 0"),
@@ -112,6 +150,27 @@ internal static class CloudPromoChecks
             if (session.CloudSurface is { } surface) host.Children.Remove(surface);
         }
     }
+
+    private static string MaxFixture
+    {
+        get
+        {
+            var start = Fixture.IndexOf("<div id=\"offer-shade\"", StringComparison.Ordinal);
+            var end = Fixture.IndexOf("<input id=\"auth-password\"", start, StringComparison.Ordinal);
+            var html = Fixture[..start] + """
+                <div id="offer-shade" class="p39"><div id="offer-panel" class="p41"><button class="p43" aria-label="Закрыть">×</button><div class="p45"></div><h2>Что нового в Mail</h2><p>Подписывайтесь на наш канал в MAX, чтобы быть в курсе обновлений и акций</p><button onclick="cloudCtaClicks++">Подписаться</button></div></div>
+                """ + Fixture[end..];
+            return html.Replace("window.cloudCtaClicks=0;", "window.cloudCtaClicks=0;window.maxPreviewCtaClicks=0;", StringComparison.Ordinal)
+                .Replace("<div role=\"row\">Отчёт.xlsx", "<div role=\"row\" id=\"max-campaign-file\">Что нового в Mail — канал в MAX — Подписаться.pdf<button>Открыть</button></div><div role=\"row\">Отчёт.xlsx", StringComparison.Ordinal)
+                .Replace("<div id=\"offer-shade\"", "<div id=\"ordinary-notice\" class=\"working\" role=\"dialog\" style=\"top:570px\"><h2>Что нового в Mail</h2><p>Файл сохранён. Синхронизация завершена.</p><button>Понятно</button><button aria-label=\"Закрыть\" onclick=\"workingCloseClicks++\">×</button></div><div id=\"offer-shade\"", StringComparison.Ordinal)
+                .Replace("<div id=\"preview-document\" role=\"document\">", "<div id=\"preview-document\" role=\"document\"><section id=\"max-preview\"><h3>Что нового в Mail</h3><p>Подписывайтесь на наш канал в MAX, чтобы быть в курсе обновлений и акций</p><button onclick=\"maxPreviewCtaClicks++\">Подписаться</button></section>", StringComparison.Ordinal);
+        }
+    }
+
+    private static string AppFixture => MaxFixture
+        .Replace("Что нового в Mail", "Установите Облако Mail", StringComparison.Ordinal)
+        .Replace("Подписывайтесь на наш канал в MAX, чтобы быть в курсе обновлений и акций", "Установите приложение Облако Mail на телефон, чтобы ваши файлы были под рукой", StringComparison.Ordinal)
+        .Replace(">Подписаться</button>", ">Установить</button>", StringComparison.Ordinal);
 
     private const string Fixture = """
         <!doctype html><html><head><meta charset="utf-8"><style>

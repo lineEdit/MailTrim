@@ -18,12 +18,23 @@ public static class CloudCosmeticScript
       const actionable = node => node.matches('a,button,[role="button"]') || node.hasAttribute('onclick') || getComputedStyle(node).cursor === 'pointer';
       const offer = node => {
         const value = text(node);
-        if (value.length > 5000 || !/(?:терабайт|гигабайт|\d\s*[тг]б\b|памят[ьи]|мест[оа]|тариф|подписк|хранилищ|облак)/iu.test(value)) return false;
+        if (value.length > 5000) return false;
+        const controls = [...node.querySelectorAll('button,a,[role="button"],div,span')].filter(actionable);
+        const action = pattern => controls.some(control => pattern.test(text(control)));
+        // Product/news invitations often have neither a price nor an ERID label.
+        // Require both promotional copy and its matching call to action.
+        const channel = /(?:подписывайтесь|подпишитесь|присоединяйтесь|наш\s+канал|официальн[а-я]*\s+канал)/iu.test(value)
+          && /канал|сообщество/iu.test(value) && /\bMAX\b|макс|телеграм|telegram|вконтакте|\bVK\b|новост|обновлен|акци/iu.test(value);
+        if (channel && action(/^(?:Подписаться|Подписаться на канал|Присоединиться|Открыть канал|Перейти в канал)$/iu)) return true;
+        const app = /(?:установите|скачайте|обновите|попробуйте|мобильное).{0,90}приложен/iu.test(value)
+          && /Облако|Почт[аыу]|Mail|RuStore/iu.test(value);
+        if (app && action(/^(?:Установить|Скачать|Обновить|Попробовать)(?: приложение| Облако| Почту| в RuStore)?$|^(?:Подробнее|Узнать больше)$/iu)) return true;
         const disclosed = /erid\s*[:=]\s*[a-z0-9]/iu.test(value) && /реклам|акци[яиюй]/iu.test(value);
+        if (disclosed && action(/^(?:Играть|Участвовать|Узнать больше|Подробнее|Перейти|Купить|Попробовать(?: Облако)?|Подписаться)$/iu)) return true;
+        if (!/(?:терабайт|гигабайт|\d\s*[тг]б\b|памят[ьи]|мест[оа]|тариф|подписк|хранилищ|облак)/iu.test(value)) return false;
         const priced = /(?:\d[\d\s.,]*\s*(?:₽|руб)|скидк|выгодн.{0,20}цен)/iu.test(value) && /(?:месяц|в год|первый год|тариф|подписк)/iu.test(value);
         if (!disclosed && !priced) return false;
-        return [...node.querySelectorAll('button,a,[role="button"],div,span')].some(control =>
-          /^(?:Попробовать(?: Облако| за .+)?|Подключить(?: Облако| тариф| подписку)?|Увеличить место|Выбрать тариф|Получить скидку)$/iu.test(text(control)) && actionable(control));
+        return action(/^(?:Попробовать(?: Облако| за .+)?|Подключить(?: Облако| тариф| подписку)?|Увеличить место|Выбрать тариф|Получить скидку)$/iu);
       };
       const overlay = node => {
         const r = node.getBoundingClientRect();
@@ -69,7 +80,7 @@ public static class CloudCosmeticScript
           const walker = document.createTreeWalker(document.body || document, NodeFilter.SHOW_TEXT);
           const checked = new Set(); let leaf;
           while ((leaf = walker.nextNode())) {
-            if (!/erid|реклам|терабайт|гигабайт|попробовать|подключить|увеличить место|выбрать тариф/iu.test(leaf.nodeValue || '')) continue;
+            if (!/erid|реклам|терабайт|гигабайт|попробовать|подключить|увеличить место|выбрать тариф|подпис|канал|приложен/iu.test(leaf.nodeValue || '')) continue;
             for (let panel = leaf.parentElement, depth = 0; panel && depth < 10 && !panel.matches('body,html,main,[role="main"]'); panel = panel.parentElement, depth++) {
               if (checked.has(panel)) continue; checked.add(panel);
               if (protectedNode(panel)) break;
