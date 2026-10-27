@@ -72,7 +72,7 @@ public static class CosmeticScript
     public static string Create(FilterRules rules, bool enabled, bool aggressive)
     {
         var selectors = enabled ? rules.HideSelectors.Concat(aggressive ? rules.AggressiveSelectors : []).ToArray() : [];
-        return """
+        return CloudCosmeticScript.Create(enabled) + "\n" + """
         (() => {
           if (window.top !== window || location.origin !== 'https://e.mail.ru') return;
           window.__mailtrimCleanup?.();

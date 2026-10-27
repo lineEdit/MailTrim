@@ -68,6 +68,7 @@ internal static class Program
                 await GmailChecks.Run(store, host, Check);
                 if (args.Length == 2 && args[1] == "--gmail-only") { result = 0; return; }
                 if (args.Length == 1 || args[1] == "--render-only") await CloudChecks.Run(store, host, window, Check);
+                if (args.Length == 1 || args[1] == "--render-only") await CloudPromoChecks.Run(store, host, window, Check);
                 if (args.Length == 1 || args[1] == "--render-only") await PresentationChecks.Run(store, host, window, Check);
                 if (args.Length == 2 && args[1] == "--render-only") { result = 0; return; }
                 if (args.Length == 1 || args[1] == "--groups-only") await GroupChecks.Run(store, host, window, Check);
