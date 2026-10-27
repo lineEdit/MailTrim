@@ -31,8 +31,9 @@ internal static class PresentationChecks
             await Navigate("https://e.mail.ru/inbox/render-first"); await Ready(session);
             check(session.Surface.Children.Count==1 && session.Surface.Children[0]==session.View,
                 "original mode contains only the live browser without a screenshot or waiting overlay");
-            check(await core.ExecuteScriptAsync("typeof window.__mailtrimPresentation==='undefined' && !document.documentElement.hasAttribute('data-mailtrim-render-pending') && getComputedStyle(document.documentElement).opacity==='1'")=="true",
-                "no whole-page render gate or readiness polling bridge remains");
+            var initial = await core.ExecuteScriptAsync("typeof window.__mailtrimPresentation==='undefined' && !document.documentElement.hasAttribute('data-mailtrim-render-pending') && getComputedStyle(document.documentElement).opacity==='1'");
+            if(initial!="true") Console.WriteLine("Synthetic first document: "+await core.ExecuteScriptAsync("({ready:document.readyState,fixture:!!document.getElementById('subject'),bridge:typeof window.__mailtrimPresentation,pending:document.documentElement?.hasAttribute('data-mailtrim-render-pending'),opacity:document.documentElement?getComputedStyle(document.documentElement).opacity:null})"));
+            check(initial=="true","no whole-page render gate or readiness polling bridge remains");
             var next=Navigate("https://e.mail.ru/inbox/render-next");await Task.Delay(50);
             check(session.View.Visibility==Visibility.Visible,"network navigation does not hide the browser behind a preparation screen");
             await next;
@@ -63,8 +64,8 @@ internal static class PresentationChecks
         async Task Navigate(string url)
         {
             var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); ulong? id = null;
-            void Start(object? s, CoreWebView2NavigationStartingEventArgs e) => id = e.NavigationId;
-            void End(object? s, CoreWebView2NavigationCompletedEventArgs e) { if (e.NavigationId == id) done.TrySetResult(); }
+            void Start(object? s, CoreWebView2NavigationStartingEventArgs e) { if(e.Uri==url) id = e.NavigationId; }
+            void End(object? s, CoreWebView2NavigationCompletedEventArgs e) { if (e.IsSuccess && e.NavigationId == id) done.TrySetResult(); }
             var core = session.View.CoreWebView2; core.NavigationStarting += Start; core.NavigationCompleted += End;
             try { core.Navigate(url); await done.Task.WaitAsync(TimeSpan.FromSeconds(10)); }
             finally { core.NavigationStarting -= Start; core.NavigationCompleted -= End; }
