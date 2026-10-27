@@ -2,6 +2,7 @@ using MailTrim.Core;
 
 var passed = 0;
 void Check(bool condition, string name) { if (!condition) throw new Exception("FAIL: " + name); Console.WriteLine("PASS " + name); passed++; }
+CloudTests.Run(Check);
 var discoveryProgress = new MailboxCacheProgress(CacheStage.Discovering, 2, 7, 120);
 Check(discoveryProgress.Indeterminate && discoveryProgress.Description.Contains("уточняется") && !discoveryProgress.Description.Contains("осталось"), "discovery never claims an exact message total or remaining count");
 var savingProgress = new MailboxCacheProgress(CacheStage.Saving, 7, 7, 20, 10, 4, 3, 1, 10, DiscoveryComplete: true);

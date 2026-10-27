@@ -15,6 +15,7 @@ internal static class CloudChecks
     {
         var browserHost = (Grid)shell.FindName("BrowserHost");
         var readerHost = (Grid)shell.FindName("ReaderHost");
+        var cloudHost = (Grid)shell.FindName("CloudHost");
         var profiles = (ListBox)shell.FindName("Profiles");
         var button = (Button)shell.FindName("CloudButton");
         var sessions = (Dictionary<Guid, BrowserSession>)typeof(MainWindow).GetField("sessions", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(shell)!;
@@ -23,24 +24,42 @@ internal static class CloudChecks
         Fixture(session.CloudView!);
         var pane = readerHost.Children[0];
         button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await Idle();
-        check(browserHost.Visibility == Visibility.Visible && readerHost.Visibility == Visibility.Collapsed && ReferenceEquals(pane, readerHost.Children[0]) && button.Content.ToString() == "Почта", "Cloud toolbar temporarily hides the same native reader without destroying it");
+        var nativeCloud = cloudHost.Children.OfType<CloudPane>().Single(x => x.Visibility == Visibility.Visible);
+        await nativeCloud.BackgroundLoad;
+        check(browserHost.Visibility == Visibility.Hidden && cloudHost.Visibility == Visibility.Visible && readerHost.Visibility == Visibility.Collapsed
+            && session.CloudSurface!.RequestedVisibility != Visibility.Visible && nativeCloud.Items.Any(x => x.Name == "Cloud test.txt")
+            && ReferenceEquals(pane, readerHost.Children[0]) && button.Content.ToString() == "Почта",
+            "Cloud toolbar shows its own file list over a hidden source without destroying the same native mail reader");
+        var original = Buttons(nativeCloud).Single(x => x.Content?.ToString() == "Оригинал ↗");
+        original.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await Idle();
+        check(session.CloudOriginal && browserHost.Visibility == Visibility.Visible && cloudHost.Visibility == Visibility.Collapsed
+            && session.CloudSurface!.Visibility == Visibility.Visible && button.Content.ToString() == "К списку",
+            "native Cloud opens the website only through its explicit original command");
         await Loaded(session.CloudView!, "document.getElementById('mail-link') !== null");
         var popupCount = shell.OwnedWindows.Count;
         await session.CloudView!.CoreWebView2.ExecuteScriptAsync("document.getElementById('mail-link').click()");
         await Until(() => shell.IsEnabled && !session.CloudOpen && readerHost.Visibility == Visibility.Visible);
-        check(ReferenceEquals(pane, readerHost.Children[0]) && shell.OwnedWindows.Count == popupCount,
+        check(ReferenceEquals(pane, readerHost.Children[0]) && cloudHost.Visibility == Visibility.Collapsed && shell.OwnedWindows.Count == popupCount,
             "Cloud site's Mail link with a new-window target returns to the same native reader without a separate window");
         button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await Idle();
         profiles.SelectedIndex = 1; await Idle();
         check(readerHost.Visibility == Visibility.Visible && button.Content.ToString() == "Облако", "another account retains its Mail reading mode instead of inheriting Cloud");
         profiles.SelectedIndex = 0; await Idle();
-        check(readerHost.Visibility == Visibility.Collapsed && button.Content.ToString() == "Почта", "returning to an account restores its Cloud workspace");
+        check(readerHost.Visibility == Visibility.Collapsed && cloudHost.Visibility == Visibility.Visible && browserHost.Visibility == Visibility.Hidden
+            && session.CloudSurface!.RequestedVisibility != Visibility.Visible && button.Content.ToString() == "Почта",
+            "returning to an account restores its native Cloud workspace without revealing the site");
         button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await Idle();
         check(readerHost.Visibility == Visibility.Visible && ((Button)shell.FindName("ReaderButton")).Content.ToString() == "Оригинал", "reading mode also returns after switching accounts while Cloud was open");
         async Task Idle()
         {
             for (var i = 0; i < 400; i++) { await Task.Delay(25); if (shell.IsEnabled) return; }
             throw new TimeoutException("cloud_shell_idle");
+        }
+        static IEnumerable<Button> Buttons(DependencyObject root)
+        {
+            if (root is Button ownButton) yield return ownButton;
+            foreach (var child in LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>())
+                foreach (var nestedButton in Buttons(child)) yield return nestedButton;
         }
     }
     public static async Task Run(LocalStore store, Grid host, Window window, Action<bool, string> check)
@@ -73,16 +92,24 @@ internal static class CloudChecks
             check(!(await second.CloudView!.CoreWebView2.CookieManager.GetCookiesAsync("https://cloud.mail.ru/")).Any(c => c.Name == cookie.Name), "Cloud cookies cannot cross account profiles");
             await Navigate(cloud, "https://cloud.mail.ru/home/Test/");
             first.SetCloudOpen(true);
-            check(first.Surface.Visibility == Visibility.Collapsed && first.CloudSurface!.Visibility == Visibility.Visible && first.ActiveView == cloud, "Cloud opens inside the application while Mail stays mounted");
+            check(first.Surface.Visibility == Visibility.Collapsed && first.CloudSurface!.Visibility == Visibility.Hidden && first.ActiveView == cloud, "Cloud defaults to a hidden source while Mail stays mounted");
+            first.SetCloudOriginal(true);
+            check(first.CloudSurface!.Visibility == Visibility.Visible, "Cloud original becomes visible only after an explicit original request");
+            first.SetCloudOriginal(false);
+            check(first.CloudSurface!.Visibility == Visibility.Hidden && cloud.Source.AbsolutePath == "/home/Test/", "returning to native Cloud hides the website without reloading its folder");
             check(await cloud.CoreWebView2.ExecuteScriptAsync("getComputedStyle(document.querySelector('.js-banner-wrapper-container')).display !== 'none' && document.querySelector('input[type=file]') !== null") == "true", "Mail cosmetic rules do not change the Cloud file interface");
             check(!cloud.CoreWebView2.Settings.IsPasswordAutosaveEnabled && !cloud.CoreWebView2.Settings.AreHostObjectsAllowed && !cloud.CoreWebView2.Settings.IsWebMessageEnabled, "Cloud keeps authentication and host bridge restrictions");
             first.SetActive(false); second.SetCloudOpen(true); second.SetActive(true);
-            check(first.CloudSurface!.Visibility == Visibility.Collapsed && second.CloudSurface!.Visibility == Visibility.Visible, "account switching changes the Cloud surface without mixing profiles");
+            check(first.CloudSurface!.Visibility == Visibility.Collapsed && second.CloudSurface!.Visibility == Visibility.Hidden, "account switching keeps each native Cloud source hidden without mixing profiles");
+            second.SetCloudOriginal(true);
+            check(second.CloudSurface!.Visibility == Visibility.Visible && !first.CloudOriginal, "explicit Cloud original preference does not cross account profiles");
+            second.SetCloudOriginal(false);
             second.SetActive(false); first.SetActive(true);
             first.SetCloudOpen(false);
             check(first.Surface.Visibility == Visibility.Visible && first.ReaderReplyOpen && first.ReadingOnly && await first.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('draft').value === 'unsent synthetic reply'") == "true", "return from Cloud preserves the mounted reply and reading mode");
             first.SetCloudOpen(true);
             check(cloud.Source.AbsolutePath == "/home/Test/", "returning to Cloud preserves its open folder without reloading");
+            first.SetCloudOriginal(true);
             var returnMail = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             first.MailRequested += () => returnMail.TrySetResult();
             cloud.CoreWebView2.Navigate("https://e.mail.ru/inbox/");
@@ -146,7 +173,7 @@ internal static class CloudChecks
         view.CoreWebView2.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
         view.CoreWebView2.WebResourceRequested += (_, e) =>
         {
-            var html = "<html><body><div class='js-banner-wrapper-container'>Cloud files toolbar</div><input id=draft><input type=file multiple><a id='mail-link' href='https://e.mail.ru/inbox/' target='_blank'>Почта</a></body></html>";
+            var html = "<html><body><div class='js-banner-wrapper-container'>Cloud files toolbar</div><h1>Все файлы</h1><div role=grid><a role=row data-type=file data-name='Cloud test.txt' data-path='/Cloud-test.txt' href='https://cloud.mail.ru/home/Cloud-test.txt'><span data-field=name>Cloud test.txt</span></a></div><input id=draft><input type=file multiple><a id='mail-link' href='https://e.mail.ru/inbox/' target='_blank'>Почта</a></body></html>";
             e.Response = view.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(html)), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
         };
     }

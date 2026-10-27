@@ -133,7 +133,9 @@ public sealed class ReaderPane : Grid
         this.session = session; this.original = original; this.imageLoader = imageLoader ?? new ReaderImageLoader();
         session.SetReadingOnly(true);
         System.Windows.Automation.AutomationProperties.SetName(searchBox, "Поиск в сохранённых письмах");
+        searchBox.Tag = "Поиск писем"; searchBox.SetResourceReference(StyleProperty, "NativeSearchBox");
         SetResourceReference(BackgroundProperty, "Panel");
+        list.SetResourceReference(StyleProperty, "NativeList");
         list.SetResourceReference(Control.BackgroundProperty, "Panel"); list.SetResourceReference(Control.ForegroundProperty, "Ink");
         ScrollViewer.SetHorizontalScrollBarVisibility(list, ScrollBarVisibility.Disabled);
         VirtualizingPanel.SetIsVirtualizing(list, true);
@@ -148,7 +150,7 @@ public sealed class ReaderPane : Grid
          </StackPanel>
         </DataTemplate>
         """);
-        list.ItemContainerStyle = new Style(typeof(ListBoxItem)) { Setters = { new Setter(Control.HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch) } };
+        list.SetResourceReference(ItemsControl.ItemContainerStyleProperty, "NativeListItem");
         ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(164) });
         ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(session.ReaderListWidth), MinWidth = 260, MaxWidth = 520 });
         ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(5) });
@@ -714,7 +716,12 @@ public sealed class ReaderPane : Grid
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch { if (!token.IsCancellationRequested) { button.Content = "Картинка недоступна · повторить"; button.IsEnabled = true; } }
     }
-    private void AddText(string text, double size = 16) => body.Children.Add(new TextBlock { Text = text, FontSize = size, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0,0,0,12) });
+    private void AddText(string text, double size = 16)
+    {
+        var block = new TextBlock { Text = text, FontSize = size, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0,0,0,12) };
+        block.SetResourceReference(StyleProperty, size >= 24 ? "NativeTitle" : size <= 13 ? "NativeMetadata" : "NativeBody");
+        body.Children.Add(block);
+    }
 }
  public sealed record ReaderPosition(ReaderLetter[] Letters, string? SelectedUrl, double ListOffset, double BodyOffset, string Folder = "https://e.mail.ru/inbox/");
  public sealed record ReaderFolder(string Name, string Url)

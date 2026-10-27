@@ -13,6 +13,7 @@ public sealed class BrowserSession : IDisposable
     public WebView2? CloudView { get; private set; }
     public BrowserSurface? CloudSurface { get; private set; }
     public bool CloudOpen { get; private set; }
+    public bool CloudOriginal { get; private set; }
     public WebView2 ActiveView => CloudOpen && CloudView is not null ? CloudView : View;
     public event Action<string>? CloudRequested;
     public event Action? MailRequested;
@@ -28,7 +29,8 @@ public sealed class BrowserSession : IDisposable
         UpdateSurfaces();
     }
     public ReaderPosition? ReaderState { get; set; }
-    public bool ReaderReplyOpen { get; set; }
+    private bool readerReplyOpen;
+    public bool ReaderReplyOpen { get => readerReplyOpen; set { readerReplyOpen = value; UpdateSurfaces(); } }
     public MessageCache Cache { get; private set; } = null!;
     private readonly LocalStore store;
     private readonly Window owner;
@@ -66,13 +68,54 @@ public sealed class BrowserSession : IDisposable
 
     private void UpdateSurfaces()
     {
+        if (disposed) return;
         Surface.SetRequestedVisibility(!active || CloudOpen ? Visibility.Collapsed : ReadingOnly && !ReaderReplyOpen ? Visibility.Hidden : Visibility.Visible);
-        CloudSurface?.SetRequestedVisibility(active && CloudOpen ? Visibility.Visible : Visibility.Collapsed);
+        CloudSurface?.SetRequestedVisibility(!active || !CloudOpen ? Visibility.Collapsed : CloudOriginal ? Visibility.Visible : Visibility.Hidden);
+        if (View.CoreWebView2 is { } mailCore) mailCore.Settings.AreDefaultScriptDialogsEnabled = !SourceIsHidden(false);
+        if (CloudView?.CoreWebView2 is { } cloudCore) cloudCore.Settings.AreDefaultScriptDialogsEnabled = !SourceIsHidden(true);
     }
+    private bool SourceIsHidden(bool cloud) => cloud
+        ? !CloudOriginal || CloudSurface?.RequestedVisibility != Visibility.Visible
+        : CloudOpen || Surface.RequestedVisibility != Visibility.Visible || ReadingOnly && !ReaderReplyOpen;
     public void SetCloudOpen(bool open)
     {
         CloudOpen = open && CloudView?.CoreWebView2 is not null;
         UpdateSurfaces();
+    }
+    public void SetCloudOriginal(bool original)
+    {
+        CloudOriginal = original && CloudView?.CoreWebView2 is not null;
+        UpdateSurfaces();
+    }
+    public async Task ShowCloudSignIn(string? loginUrl, Action finished)
+    {
+        if (disposed || environment is null || popups.Count >= 4) return;
+        var url = NavigationPolicy.IsInternal(loginUrl ?? "") && !NavigationPolicy.IsMail(loginUrl!) && !NavigationPolicy.IsCloud(loginUrl!)
+            ? loginUrl! : "https://account.mail.ru/login/";
+        var child = new WebView2();
+        var window = new Window { Owner = owner, Title = "MailTrim • вход в Облако", Width = 720, Height = 780, Content = child, WindowStartupLocation = WindowStartupLocation.CenterOwner };
+        popups.Add((window, child));
+        var enteredSignIn = false;
+        window.Closed += (_, _) =>
+        {
+            popups.RemoveAll(p => p.Window == window); scripts.Remove(child); child.Dispose();
+            if (!disposed) finished();
+        };
+        try
+        {
+            window.Show(); await child.EnsureCoreWebView2Async(environment); await Configure(child, true, cloud: true);
+            child.CoreWebView2.NavigationStarting += (_, e) =>
+            {
+                if (NavigationPolicy.IsInternal(e.Uri) && !NavigationPolicy.IsCloud(e.Uri) && !NavigationPolicy.IsMail(e.Uri)) enteredSignIn = true;
+                if (enteredSignIn && (NavigationPolicy.IsCloud(e.Uri) || NavigationPolicy.IsMail(e.Uri)))
+                {
+                    e.Cancel = true; _ = owner.Dispatcher.BeginInvoke(() => { if (popups.Any(p => p.Window == window)) window.Close(); });
+                }
+            };
+            child.CoreWebView2.WindowCloseRequested += (_, _) => window.Close();
+            child.CoreWebView2.Navigate(url);
+        }
+        catch { store.Log("cloud_signin_failed"); window.Close(); status("Не удалось открыть официальный вход в Облако."); }
     }
     public async Task EnsureCloud(Action<BrowserSurface>? mount = null)
     {
@@ -126,6 +169,7 @@ public sealed class BrowserSession : IDisposable
         core.Settings.AreDevToolsEnabled = false;
         core.Settings.AreDefaultContextMenusEnabled = true;
         core.Settings.IsStatusBarEnabled = false;
+        if (!popup) core.Settings.AreDefaultScriptDialogsEnabled = !SourceIsHidden(cloud);
         core.NavigationStarting += (_, e) =>
         {
             if (popupRoutePending) { e.Cancel = true; return; }
@@ -153,19 +197,19 @@ public sealed class BrowserSession : IDisposable
             if (NavigationPolicy.IsCloud(e.Uri) && !cloud && !popup)
             {
                 e.Cancel = true;
-                if (!background) owner.Dispatcher.BeginInvoke(() => { if (!disposed) CloudRequested?.Invoke(e.Uri); });
+                if (!background && !SourceIsHidden(false)) owner.Dispatcher.BeginInvoke(() => { if (!disposed) CloudRequested?.Invoke(e.Uri); });
                 return;
             }
             if (cloud && !popup && NavigationPolicy.IsMail(e.Uri))
             {
                 e.Cancel = true;
-                owner.Dispatcher.BeginInvoke(() => { if (!disposed) MailRequested?.Invoke(); });
+                if (!SourceIsHidden(true)) owner.Dispatcher.BeginInvoke(() => { if (!disposed) MailRequested?.Invoke(); });
                 return;
             }
             if (NavigationPolicy.IsInternal(e.Uri)) { if (!background) status("Загрузка официальной страницы…"); return; }
             if ((popup || clearing) && e.Uri == "about:blank") return;
             e.Cancel = true;
-            if (background) return;
+            if (background || !popup && SourceIsHidden(cloud)) return;
             // Do not leak an OAuth redirect URL into another browser automatically.
             if (NavigationPolicy.IsExternal(e.Uri) && e.IsUserInitiated) QueueExternal(e.Uri);
             else status("Переход на внешний сайт остановлен. Откройте ссылку вручную в браузере.");
@@ -185,6 +229,7 @@ public sealed class BrowserSession : IDisposable
             e.SavesInProfile = false;
             e.State = CoreWebView2PermissionState.Deny;
             if (background) return;
+            if (!popup && SourceIsHidden(cloud)) return;
             if (e.PermissionKind == CoreWebView2PermissionKind.Notifications)
             {
                 if (SiteNotificationPolicy.CanDeliver(store.Settings, e.Uri)) e.State = CoreWebView2PermissionState.Allow;
@@ -210,6 +255,7 @@ public sealed class BrowserSession : IDisposable
         {
             e.Handled = true;
             if (background) return;
+            if (!popup && SourceIsHidden(cloud)) return;
             if (cloud && !popup && NavigationPolicy.IsMail(e.Uri))
             {
                 _ = owner.Dispatcher.BeginInvoke(() => { if (!disposed) MailRequested?.Invoke(); });
@@ -249,7 +295,7 @@ public sealed class BrowserSession : IDisposable
         };
         core.DownloadStarting += async (_, e) =>
         {
-            if (background) { e.Cancel = true; return; }
+            if (background || !popup && SourceIsHidden(cloud)) { e.Cancel = true; return; }
             // Use WebView2's download UI; always ask for a path, never auto-open attachments.
             using var deferral = e.GetDeferral();
             e.Cancel = true;
@@ -291,6 +337,7 @@ public sealed class BrowserSession : IDisposable
         ReaderState = null; ReaderReplyOpen = false; readerData?.Prepared.Clear(); Cache.Clear();
         foreach (var p in popups.ToArray()) p.Window.Close();
         SetCloudOpen(false);
+        SetCloudOriginal(false);
         try
         {
             clearing = true;

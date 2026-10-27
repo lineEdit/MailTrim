@@ -24,7 +24,7 @@ internal static class CloudPromoChecks
                 new MemoryStream(Encoding.UTF8.GetBytes(new Uri(e.Request.Uri).AbsolutePath.Contains("__mailtrim_max", StringComparison.Ordinal) ? MaxFixture
                     : new Uri(e.Request.Uri).AbsolutePath.Contains("__mailtrim_app", StringComparison.Ordinal) ? AppFixture : Fixture)),
                 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
-            session.SetActive(true); session.SetCloudOpen(true);
+            session.SetCloudOriginal(true); session.SetActive(true); session.SetCloudOpen(true);
             await Navigate("https://cloud.mail.ru/home/__mailtrim_promos");
             await Until("window.cloudFirstFrame !== undefined");
             check(await Is("!cloudFirstFrame && document.getElementById('offer-panel').getBoundingClientRect().height === 0 && document.getElementById('offer-shade').getBoundingClientRect().height === 0"),

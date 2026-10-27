@@ -68,6 +68,7 @@ internal static class Program
                 await GmailChecks.Run(store, host, Check);
                 if (args.Length == 2 && args[1] == "--gmail-only") { result = 0; return; }
                 if (args.Length == 1 || args[1] == "--render-only") await CloudChecks.Run(store, host, window, Check);
+                if (args.Length == 1 || args[1] == "--render-only") await NativeCloudChecks.Run(store, host, window, Check);
                 if (args.Length == 1 || args[1] == "--render-only") await CloudPromoChecks.Run(store, host, window, Check);
                 if (args.Length == 1 || args[1] == "--render-only") await PresentationChecks.Run(store, host, window, Check);
                 if (args.Length == 2 && args[1] == "--render-only") { result = 0; return; }
@@ -81,6 +82,7 @@ internal static class Program
                 var secondProfileId = Guid.NewGuid();
                 await a.Initialize(id); await b.Initialize(secondProfileId);
                 a.View.CoreWebView2.Stop(); b.View.CoreWebView2.Stop();
+                a.SetActive(true); // Match the shell's selected-account lifecycle for inline replies.
                 ConfigureFixture(a); ConfigureFixture(b);
                 if (args.Length == 2 && args[1] == "--images-only")
                 {
