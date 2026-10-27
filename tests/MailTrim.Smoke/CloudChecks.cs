@@ -24,8 +24,12 @@ internal static class CloudChecks
         var pane = readerHost.Children[0];
         button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await Idle();
         check(browserHost.Visibility == Visibility.Visible && readerHost.Visibility == Visibility.Collapsed && ReferenceEquals(pane, readerHost.Children[0]) && button.Content.ToString() == "Почта", "Cloud toolbar temporarily hides the same native reader without destroying it");
-        button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await Idle();
-        check(readerHost.Visibility == Visibility.Visible && ReferenceEquals(pane, readerHost.Children[0]), "Cloud toolbar returns to the same native reader");
+        await Loaded(session.CloudView!, "document.getElementById('mail-link') !== null");
+        var popupCount = shell.OwnedWindows.Count;
+        await session.CloudView!.CoreWebView2.ExecuteScriptAsync("document.getElementById('mail-link').click()");
+        await Until(() => shell.IsEnabled && !session.CloudOpen && readerHost.Visibility == Visibility.Visible);
+        check(ReferenceEquals(pane, readerHost.Children[0]) && shell.OwnedWindows.Count == popupCount,
+            "Cloud site's Mail link with a new-window target returns to the same native reader without a separate window");
         button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await Idle();
         profiles.SelectedIndex = 1; await Idle();
         check(readerHost.Visibility == Visibility.Visible && button.Content.ToString() == "Облако", "another account retains its Mail reading mode instead of inheriting Cloud");
@@ -84,6 +88,41 @@ internal static class CloudChecks
             cloud.CoreWebView2.Navigate("https://e.mail.ru/inbox/");
             await returnMail.Task.WaitAsync(TimeSpan.FromSeconds(10));
             check(cloud.Source.Host == "cloud.mail.ru", "Cloud mail links return to the existing Mail view instead of replacing Cloud");
+            var ownedCount = window.OwnedWindows.Count;
+            var popupMail = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            first.MailRequested += () => popupMail.TrySetResult();
+            await cloud.CoreWebView2.ExecuteScriptAsync("document.getElementById('mail-link').click()");
+            await popupMail.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            check(window.OwnedWindows.Count == ownedCount && cloud.Source.AbsolutePath == "/home/Test/"
+                && await first.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('draft').value === 'unsent synthetic reply'") == "true",
+                "Cloud Mail target=_blank returns to the mounted reply without creating a popup or replacing the Cloud folder");
+            var blankMail = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            first.MailRequested += () => blankMail.TrySetResult();
+            await cloud.CoreWebView2.ExecuteScriptAsync("window.syntheticMailWindow=window.open('about:blank','_blank');window.syntheticMailWindow.location.href='https://e.mail.ru/inbox/'");
+            await blankMail.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await Until(() => window.OwnedWindows.Count == ownedCount);
+            check(cloud.Source.AbsolutePath == "/home/Test/"
+                && await first.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('draft').value === 'unsent synthetic reply'") == "true",
+                "Cloud Mail popup created through about:blank is closed after returning to the existing mail workspace");
+            var existingWindows = window.OwnedWindows.Cast<Window>().ToHashSet();
+            var authRoutedToMail = false;
+            first.MailRequested += () => authRoutedToMail = true;
+            await cloud.CoreWebView2.ExecuteScriptAsync("window.syntheticAuthWindow=window.open('about:blank','_blank')");
+            await Until(() => window.OwnedWindows.Cast<Window>().Any(w => !existingWindows.Contains(w) && w.Content is WebView2 { CoreWebView2: not null }));
+            var authWindow = window.OwnedWindows.Cast<Window>().Single(w => !existingWindows.Contains(w));
+            try
+            {
+                var authView = (WebView2)authWindow.Content;
+                Fixture(authView);
+                await Navigate(authView, "https://account.mail.ru/__mailtrim_cloud_auth");
+                await Navigate(authView, "https://e.mail.ru/inbox/auth-complete");
+                check(!authRoutedToMail && window.OwnedWindows.Cast<Window>().Contains(authWindow)
+                    && await authView.CoreWebView2.ExecuteScriptAsync("window.opener !== null") == "true",
+                    "about:blank popup that enters official authentication preserves its opener and subsequent Mail redirect");
+                check((await authView.CoreWebView2.CookieManager.GetCookiesAsync("https://e.mail.ru/")).Any(c => c.Name == cookie.Name && c.Value == "profile-one"),
+                    "Cloud authentication popup retains the selected account's shared session");
+            }
+            finally { authWindow.Close(); }
             var externalStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             cloud.CoreWebView2.NavigationStarting += (_, e) => { if (e.Uri == "https://example.test/") externalStarted.TrySetResult(e.Cancel); };
             cloud.CoreWebView2.Navigate("https://example.test/");
@@ -106,9 +145,23 @@ internal static class CloudChecks
         view.CoreWebView2.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
         view.CoreWebView2.WebResourceRequested += (_, e) =>
         {
-            var html = "<html><body><div class='js-banner-wrapper-container'>Cloud files toolbar</div><input id=draft><input type=file multiple></body></html>";
+            var html = "<html><body><div class='js-banner-wrapper-container'>Cloud files toolbar</div><input id=draft><input type=file multiple><a id='mail-link' href='https://e.mail.ru/inbox/' target='_blank'>Почта</a></body></html>";
             e.Response = view.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(html)), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
         };
+    }
+    private static async Task Until(Func<bool> condition)
+    {
+        for (var i = 0; i < 400; i++) { if (condition()) return; await Task.Delay(25); }
+        throw new TimeoutException("cloud_route_condition");
+    }
+    private static async Task Loaded(WebView2 view, string expression)
+    {
+        for (var i = 0; i < 400; i++)
+        {
+            if (await view.CoreWebView2.ExecuteScriptAsync(expression) == "true") return;
+            await Task.Delay(25);
+        }
+        throw new TimeoutException("cloud_fixture_loaded");
     }
     private static async Task Navigate(WebView2 view, string url)
     {

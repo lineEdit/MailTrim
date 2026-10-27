@@ -114,9 +114,11 @@ public sealed class BrowserSession : IDisposable
         if (!background) View.CoreWebView2.Navigate("https://e.mail.ru/inbox/");
     }
 
-    private async Task Configure(WebView2 view, bool popup, bool background = false, bool cloud = false)
+    private async Task Configure(WebView2 view, bool popup, bool background = false, bool cloud = false, Action? closeWorkspacePopup = null)
     {
         var core = view.CoreWebView2;
+        var provisionalPopup = closeWorkspacePopup is not null;
+        var popupRoutePending = false;
         core.Settings.AreHostObjectsAllowed = false;
         core.Settings.IsWebMessageEnabled = false;
         core.Settings.IsPasswordAutosaveEnabled = false;
@@ -126,6 +128,28 @@ public sealed class BrowserSession : IDisposable
         core.Settings.IsStatusBarEnabled = false;
         core.NavigationStarting += (_, e) =>
         {
+            if (popupRoutePending) { e.Cancel = true; return; }
+            if (provisionalPopup && NavigationPolicy.IsInternal(e.Uri))
+            {
+                var mailTarget = NavigationPolicy.IsMail(e.Uri);
+                var cloudTarget = NavigationPolicy.IsCloud(e.Uri);
+                if (mailTarget || cloudTarget)
+                {
+                    e.Cancel = true; popupRoutePending = true;
+                    var destination = e.Uri;
+                    _ = owner.Dispatcher.BeginInvoke(() =>
+                    {
+                        if (disposed) return;
+                        closeWorkspacePopup!();
+                        if (mailTarget) MailRequested?.Invoke();
+                        else CloudRequested?.Invoke(destination);
+                    });
+                    return;
+                }
+                // Once an official sign-in page owns a blank window, preserve its
+                // opener and all subsequent authentication redirects in that window.
+                provisionalPopup = false;
+            }
             if (NavigationPolicy.IsCloud(e.Uri) && !cloud && !popup)
             {
                 e.Cancel = true;
@@ -186,6 +210,11 @@ public sealed class BrowserSession : IDisposable
         {
             e.Handled = true;
             if (background) return;
+            if (cloud && !popup && NavigationPolicy.IsMail(e.Uri))
+            {
+                _ = owner.Dispatcher.BeginInvoke(() => { if (!disposed) MailRequested?.Invoke(); });
+                return;
+            }
             if (NavigationPolicy.IsCloud(e.Uri))
             {
                 if (cloud) core.Navigate(e.Uri);
@@ -207,7 +236,7 @@ public sealed class BrowserSession : IDisposable
             {
                 window.Show();
                 await child.EnsureCoreWebView2Async(environment);
-                await Configure(child, true, cloud: cloud);
+                await Configure(child, true, cloud: cloud, closeWorkspacePopup: cloud && !popup && e.Uri == "about:blank" ? window.Close : null);
                 child.CoreWebView2.SourceChanged += (_, _) =>
                 {
                     if (Uri.TryCreate(child.CoreWebView2.Source, UriKind.Absolute, out var origin))
