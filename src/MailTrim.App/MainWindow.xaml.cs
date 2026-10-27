@@ -130,9 +130,9 @@ public partial class MainWindow : Window
                 Profiles.SelectedIndex = (Profiles.SelectedIndex + step + Profiles.Items.Count) % Profiles.Items.Count;
                 e.Handled = true; return;
             }
-            if (reader is not null && Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.F)
+            if (Current?.CloudOpen != true && reader is not null && Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.F)
             { reader.FocusSearch(); e.Handled = true; return; }
-            if (reader is not null && Keyboard.Modifiers == ModifierKeys.None && e.Key == Key.Escape)
+            if (Current?.CloudOpen != true && reader is not null && Keyboard.Modifiers == ModifierKeys.None && e.Key == Key.Escape)
             { e.Handled = true; await reader.ResetSearch(); return; }
             if (CurrentGmail is { } g)
             {
