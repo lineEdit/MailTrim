@@ -81,6 +81,7 @@ internal static class GmailChecks
         store.Settings.Profiles.Add(new AccountProfile { Provider = MailProvider.Gmail, Name = "Second Gmail" });
         var shell = new MainWindow(store) { Left = -20000, Top = -20000, ShowInTaskbar = false, ShowActivated = false }; shell.Show(); await Task.Delay(100);
         check(((Grid)shell.FindName("BrowserHost")).Children.Count == 0 && ((Grid)shell.FindName("GmailHost")).Children.Count == 2,"Gmail tabs never initialize a WebView session");
+          check(((Button)shell.FindName("CloudButton")).Visibility == Visibility.Collapsed,"Gmail does not expose Mail Cloud with the wrong account session");
         typeof(MainWindow).GetField("readerMode",System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.SetValue(shell,true);
         ((ListBox)shell.FindName("Profiles")).SelectedIndex = 1; await Task.Delay(100);
         check((bool)typeof(MainWindow).GetField("readerMode",System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(shell)!

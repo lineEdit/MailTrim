@@ -10,6 +10,12 @@ public sealed class BrowserSession : IDisposable
 {
     public WebView2 View { get; } = new();
     public BrowserSurface Surface { get; }
+    public WebView2? CloudView { get; private set; }
+    public BrowserSurface? CloudSurface { get; private set; }
+    public bool CloudOpen { get; private set; }
+    public WebView2 ActiveView => CloudOpen && CloudView is not null ? CloudView : View;
+    public event Action<string>? CloudRequested;
+    public event Action? MailRequested;
     public Guid ProfileId { get; private set; }
     public LocalStore Store => store;
     private ReaderDataService? readerData;
@@ -19,7 +25,7 @@ public sealed class BrowserSession : IDisposable
     public void SetReadingOnly(bool reading)
     {
         ReadingOnly = reading;
-        Surface.SetRequestedVisibility(!active ? Visibility.Collapsed : reading && !ReaderReplyOpen ? Visibility.Hidden : Visibility.Visible);
+        UpdateSurfaces();
     }
     public ReaderPosition? ReaderState { get; set; }
     public bool ReaderReplyOpen { get; set; }
@@ -54,8 +60,40 @@ public sealed class BrowserSession : IDisposable
     public void SetActive(bool active)
     {
         this.active = active;
-        Surface.SetRequestedVisibility(!active ? Visibility.Collapsed : ReadingOnly && !ReaderReplyOpen ? Visibility.Hidden : Visibility.Visible);
+        UpdateSurfaces();
         foreach (var p in popups.ToArray()) { if (active) p.Window.Show(); else p.Window.Hide(); }
+    }
+
+    private void UpdateSurfaces()
+    {
+        Surface.SetRequestedVisibility(!active || CloudOpen ? Visibility.Collapsed : ReadingOnly && !ReaderReplyOpen ? Visibility.Hidden : Visibility.Visible);
+        CloudSurface?.SetRequestedVisibility(active && CloudOpen ? Visibility.Visible : Visibility.Collapsed);
+    }
+    public void SetCloudOpen(bool open)
+    {
+        CloudOpen = open && CloudView?.CoreWebView2 is not null;
+        UpdateSurfaces();
+    }
+    public async Task EnsureCloud(Action<BrowserSurface>? mount = null)
+    {
+        if (disposed || environment is null) throw new InvalidOperationException("Profile is not initialized.");
+        if (CloudView is not null) return;
+        var view = new WebView2();
+        CloudView = view; CloudSurface = new BrowserSurface(view);
+        CloudSurface.SetRequestedVisibility(Visibility.Collapsed);
+        try
+        {
+            mount?.Invoke(CloudSurface);
+            // Share this account's cookie jar, never another account's or a system browser's.
+            await view.EnsureCoreWebView2Async(environment);
+            if (disposed) throw new ObjectDisposedException(nameof(BrowserSession));
+            await Configure(view, false, cloud: true);
+        }
+        catch
+        {
+            if (CloudSurface?.Parent is System.Windows.Controls.Panel parent) parent.Children.Remove(CloudSurface);
+            scripts.Remove(view); view.Dispose(); CloudView = null; CloudSurface = null; throw;
+        }
     }
 
     public BrowserSession(LocalStore store, Window owner, Action<string> status, Func<bool> paused, Action<string>? externalHandler = null)
@@ -76,7 +114,7 @@ public sealed class BrowserSession : IDisposable
         if (!background) View.CoreWebView2.Navigate("https://e.mail.ru/inbox/");
     }
 
-    private async Task Configure(WebView2 view, bool popup, bool background = false)
+    private async Task Configure(WebView2 view, bool popup, bool background = false, bool cloud = false)
     {
         var core = view.CoreWebView2;
         core.Settings.AreHostObjectsAllowed = false;
@@ -88,17 +126,29 @@ public sealed class BrowserSession : IDisposable
         core.Settings.IsStatusBarEnabled = false;
         core.NavigationStarting += (_, e) =>
         {
+            if (NavigationPolicy.IsCloud(e.Uri) && !cloud && !popup)
+            {
+                e.Cancel = true;
+                if (!background) owner.Dispatcher.BeginInvoke(() => { if (!disposed) CloudRequested?.Invoke(e.Uri); });
+                return;
+            }
+            if (cloud && !popup && NavigationPolicy.IsMail(e.Uri))
+            {
+                e.Cancel = true;
+                owner.Dispatcher.BeginInvoke(() => { if (!disposed) MailRequested?.Invoke(); });
+                return;
+            }
             if (NavigationPolicy.IsInternal(e.Uri)) { if (!background) status("Загрузка официальной страницы…"); return; }
             if ((popup || clearing) && e.Uri == "about:blank") return;
             e.Cancel = true;
             if (background) return;
             // Do not leak an OAuth redirect URL into another browser automatically.
             if (NavigationPolicy.IsExternal(e.Uri) && e.IsUserInitiated) QueueExternal(e.Uri);
-            else status("Переход за пределы почты остановлен. Откройте ссылку вручную в браузере.");
+            else status("Переход на внешний сайт остановлен. Откройте ссылку вручную в браузере.");
         };
         core.NavigationCompleted += (_, e) =>
         {
-            if (background) return;
+            if (background || e.WebErrorStatus == CoreWebView2WebErrorStatus.OperationCanceled) return;
             status(e.IsSuccess ? $"Готово · заблокировано запросов: {blocked}" : "Страница не загрузилась. Проверьте сеть или временно отключите фильтры.");
             if (!e.IsSuccess) store.Log("navigation_failed");
         };
@@ -136,6 +186,12 @@ public sealed class BrowserSession : IDisposable
         {
             e.Handled = true;
             if (background) return;
+            if (NavigationPolicy.IsCloud(e.Uri))
+            {
+                if (cloud) core.Navigate(e.Uri);
+                else _ = owner.Dispatcher.BeginInvoke(() => { if (!disposed) CloudRequested?.Invoke(e.Uri); });
+                return;
+            }
             if (!NavigationPolicy.IsInternal(e.Uri) && e.Uri != "about:blank")
             {
                 if (e.IsUserInitiated && NavigationPolicy.IsExternal(e.Uri)) QueueExternal(e.Uri);
@@ -151,7 +207,7 @@ public sealed class BrowserSession : IDisposable
             {
                 window.Show();
                 await child.EnsureCoreWebView2Async(environment);
-                await Configure(child, true);
+                await Configure(child, true, cloud: cloud);
                 child.CoreWebView2.SourceChanged += (_, _) =>
                 {
                     if (Uri.TryCreate(child.CoreWebView2.Source, UriKind.Absolute, out var origin))
@@ -171,7 +227,7 @@ public sealed class BrowserSession : IDisposable
             await owner.Dispatcher.InvokeAsync(() =>
             {
                 if (disposed) return;
-                var dialog = new Microsoft.Win32.SaveFileDialog { FileName = System.IO.Path.GetFileName(e.ResultFilePath), Title = "Сохранить вложение" };
+                var dialog = new Microsoft.Win32.SaveFileDialog { FileName = System.IO.Path.GetFileName(e.ResultFilePath), Title = "Сохранить файл" };
                 if (dialog.ShowDialog(owner) == true) { e.ResultFilePath = dialog.FileName; e.Cancel = false; }
             });
         };
@@ -193,7 +249,7 @@ public sealed class BrowserSession : IDisposable
     };
     public async Task ApplySettings()
     {
-        foreach (var view in new[] { View }.Concat(popups.Select(p => p.View)).ToArray())
+        foreach (var view in new[] { View }.Concat(CloudView is { } cloud ? new[] { cloud } : []).Concat(popups.Select(p => p.View)).ToArray())
         {
             if (view.CoreWebView2 is null) continue;
             await SetScript(view); SetTheme(view);
@@ -205,19 +261,27 @@ public sealed class BrowserSession : IDisposable
     {
         ReaderState = null; ReaderReplyOpen = false; readerData?.Prepared.Clear(); Cache.Clear();
         foreach (var p in popups.ToArray()) p.Window.Close();
-        View.CoreWebView2.Stop();
-        // Navigate away before wiping so the loaded mail page cannot repopulate its session.
-        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        void Completed(object? s, CoreWebView2NavigationCompletedEventArgs e) => done.TrySetResult();
-        View.CoreWebView2.NavigationCompleted += Completed;
+        SetCloudOpen(false);
         try
         {
             clearing = true;
-            View.CoreWebView2.NavigateToString("<html><body>Clearing session</body></html>");
-            await done.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            // Both live documents must leave before wiping their shared profile.
+            if (CloudView?.CoreWebView2 is not null) await LeaveDocument(CloudView);
+            await LeaveDocument(View);
             await View.CoreWebView2.Profile.ClearBrowsingDataAsync(CoreWebView2BrowsingDataKinds.AllProfile);
         }
-        finally { clearing = false; View.CoreWebView2.NavigationCompleted -= Completed; }
+        finally { clearing = false; }
+    }
+    private static async Task LeaveDocument(WebView2 view)
+    {
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        ulong navigation = 0;
+        void Starting(object? s, CoreWebView2NavigationStartingEventArgs e) { if (e.Uri == "about:blank") navigation = e.NavigationId; }
+        void Completed(object? s, CoreWebView2NavigationCompletedEventArgs e) { if (e.IsSuccess && e.NavigationId == navigation) done.TrySetResult(); }
+        var core = view.CoreWebView2;
+        core.NavigationStarting += Starting; core.NavigationCompleted += Completed;
+        try { core.Stop(); core.Navigate("about:blank"); await done.Task.WaitAsync(TimeSpan.FromSeconds(10)); }
+        finally { core.NavigationStarting -= Starting; core.NavigationCompleted -= Completed; }
     }
     private void QueueExternal(string url) => owner.Dispatcher.BeginInvoke(() => { if (!disposed) OpenExternal(url); });
     private void OpenExternal(string url)
@@ -233,7 +297,7 @@ public sealed class BrowserSession : IDisposable
     {
         disposed = true; readerData?.Dispose();
         foreach (var p in popups.ToArray()) p.Window.Close();
-        View.Dispose(); scripts.Clear();
+        CloudView?.Dispose(); View.Dispose(); scripts.Clear();
     }
 }
 

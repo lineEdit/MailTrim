@@ -14,6 +14,10 @@ foreach (var url in new[] { "https://e.mail.ru/inbox/", "https://account.mail.ru
 foreach (var url in new[] { "https://e.mail.ru.evil.test/", "https://evilmail.ru/", "http://e.mail.ru/", "https://e.mail.ru:444/", "https://evil@e.mail.ru/", "file:///C:/Windows/", "javascript:alert(1)", "https://news.mail.ru/" })
     Check(!NavigationPolicy.IsInternal(url), "reject internal " + url);
 Check(!NavigationPolicy.IsExternal("file:///C:/Windows"), "no shell file launch");
+Check(NavigationPolicy.IsCloud("https://cloud.mail.ru/home/") && NavigationPolicy.IsInternal("https://cloud.mail.ru/public/test"), "official Cloud stays internal");
+Check(!NavigationPolicy.IsMail("https://cloud.mail.ru/home/") && ReaderData.Clean(new ReaderLetter("https://cloud.mail.ru/home/file", "s", "t", "p", "d")) is null, "Cloud files never become mail reader records");
+foreach (var url in new[] { "https://cloud.mail.ru.evil.test/", "https://fake.cloud.mail.ru/", "http://cloud.mail.ru/", "https://cloud.mail.ru:444/", "https://evil@cloud.mail.ru/" })
+    Check(!NavigationPolicy.IsCloud(url) && !NavigationPolicy.IsInternal(url), "reject fake Cloud origin " + url);
 Check(!NavigationPolicy.IsExternal("ms-settings:privacy"), "no arbitrary protocols");
 Check(!NavigationPolicy.IsExternal("https://user:pass@example.org"), "no URL credentials");
 var observed = new DateTimeOffset(2026,10,4,10,0,0,TimeSpan.FromHours(3));

@@ -67,6 +67,7 @@ internal static class Program
                 }
                 await GmailChecks.Run(store, host, Check);
                 if (args.Length == 2 && args[1] == "--gmail-only") { result = 0; return; }
+                if (args.Length == 1 || args[1] == "--render-only") await CloudChecks.Run(store, host, window, Check);
                 if (args.Length == 1 || args[1] == "--render-only") await PresentationChecks.Run(store, host, window, Check);
                 if (args.Length == 2 && args[1] == "--render-only") { result = 0; return; }
                 if (args.Length == 1 || args[1] == "--groups-only") await GroupChecks.Run(store, host, window, Check);
@@ -796,6 +797,7 @@ internal static class Program
                 var surfaces = browserHost.Children.OfType<BrowserSurface>().ToArray();
                 var firstView = surfaces.First().Children.OfType<Microsoft.Web.WebView2.Wpf.WebView2>().Single();
                 Check(surfaces.Length == 2 && browserHost.Visibility == Visibility.Hidden && surfaces.All(v => !v.IsVisible), "reader keeps source web surfaces invisible across account switches");
+                await CloudChecks.Shell(shell, Check);
 
                 firstView.CoreWebView2.WebResourceRequested += (_, e) =>
                 {

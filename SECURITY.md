@@ -45,3 +45,7 @@ Host objects, web messages и DevTools отключены. Sandbox и прове
 Для уязвимостей используйте private vulnerability reporting репозитория, если оно включено. Не публикуйте секреты или подробности личной сессии в публичном issue.
 
 Основание решений: [WebView2 security](https://learn.microsoft.com/microsoft-edge/webview2/concepts/security) и [user data folders](https://learn.microsoft.com/microsoft-edge/webview2/concepts/user-data-folder).
+
+## Облако Mail
+
+Разрешён точный HTTPS-host cloud.mail.ru со стандартным портом без userinfo; это не разрешение произвольных поддоменов Mail.ru. Облако и почта одного профиля разделяют браузерное хранилище и официальный вход. Разные профили остаются изолированы. Host objects, обмен сообщениями с приложением и сохранение паролей для нового WebView2 отключены; правила сертификатов, внешних переходов и подтверждения разрешений общие. Облако не извлекается в почтовый кэш. Перед очисткой профиля оба живых документа переводятся на about:blank.

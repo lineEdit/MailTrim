@@ -7,7 +7,7 @@ public static class NavigationPolicy
 {
     // Exact hosts only. Never permit *.mail.ru or *.vk.com for top-level navigation.
     private static readonly HashSet<string> Internal = new(StringComparer.OrdinalIgnoreCase)
-    { "e.mail.ru", "account.mail.ru", "auth.mail.ru", "oauth.mail.ru", "id.mail.ru", "id.vk.com", "id.vk.ru", "login.vk.com", "login.vk.ru", "oauth.vk.com", "oauth.vk.ru" };
+    { "e.mail.ru", "cloud.mail.ru", "account.mail.ru", "auth.mail.ru", "oauth.mail.ru", "id.mail.ru", "id.vk.com", "id.vk.ru", "login.vk.com", "login.vk.ru", "oauth.vk.com", "oauth.vk.ru" };
 
     public static bool IsInternal(string url) => Uri.TryCreate(url, UriKind.Absolute, out var u)
         && u.Scheme == "https" && u.IsDefaultPort && u.UserInfo.Length == 0 && Internal.Contains(u.IdnHost);
@@ -15,6 +15,8 @@ public static class NavigationPolicy
         && u.Scheme is "https" or "http" && u.UserInfo.Length == 0;
     public static bool IsMail(string url) => Uri.TryCreate(url, UriKind.Absolute, out var u)
         && u.Scheme == "https" && u.IsDefaultPort && u.UserInfo.Length == 0 && u.IdnHost == "e.mail.ru";
+    public static bool IsCloud(string url) => Uri.TryCreate(url, UriKind.Absolute, out var u)
+        && u.Scheme == "https" && u.IsDefaultPort && u.UserInfo.Length == 0 && u.IdnHost == "cloud.mail.ru";
     public static bool HostMatches(string host, string domain) => host.Equals(domain, StringComparison.OrdinalIgnoreCase)
         || host.EndsWith("." + domain, StringComparison.OrdinalIgnoreCase);
 }

@@ -55,6 +55,7 @@ public partial class MainWindow : Window
     private void NavigateFromReader(Action<BrowserSession> navigate, bool refreshReader = false)
     {
         if (busy || Current is not { } current) return;
+        if (current.CloudOpen) { NavigateCloud(current, refreshReader); return; }
         if (reader is { IsReplyVisible: false } native)
         {
             _ = Run(() => refreshReader ? native.RefreshList() : native.PreviousLetter());
@@ -63,6 +64,39 @@ public partial class MainWindow : Window
         if (!ConfirmReplyExit()) return;
         CloseReader(); current.ReaderReplyOpen = false;
         navigate(current);
+    }
+    private static void NavigateCloud(BrowserSession current, bool reload)
+    {
+        if (reload) current.ActiveView.Reload();
+        else if (current.ActiveView.CanGoBack) current.ActiveView.GoBack();
+    }
+    private void UpdateWorkspace()
+    {
+        var cloud = Current?.CloudOpen == true;
+        BrowserHost.Visibility = cloud || reader is null ? Visibility.Visible : Visibility.Hidden;
+        ReaderHost.Visibility = !cloud && reader is not null ? Visibility.Visible : Visibility.Collapsed;
+        ReaderButton.Visibility = cloud ? Visibility.Collapsed : Visibility.Visible;
+        CloudButton.Content = cloud ? "Почта" : "Облако";
+        CloudButton.ToolTip = cloud ? "Вернуться к открытой почте" : "Облако Mail выбранного ящика";
+    }
+    private async Task OpenCloud(string url = "https://cloud.mail.ru/")
+    {
+        if (Current is not { } current || !NavigationPolicy.IsCloud(url)) return;
+        await current.EnsureCloud(surface => BrowserHost.Children.Add(surface));
+        current.SetCloudOpen(true); UpdateWorkspace();
+        // Returning to Cloud preserves its folder, file selection and in-flight uploads.
+        if (url != "https://cloud.mail.ru/" || current.CloudView!.Source is null || current.CloudView.Source.AbsoluteUri == "about:blank")
+            current.CloudView!.CoreWebView2.Navigate(url);
+    }
+    private async Task ReturnToMail()
+    {
+        Current?.SetCloudOpen(false); UpdateWorkspace();
+        if (readerMode && reader is null) await OpenReader();
+    }
+    private async void Cloud_Click(object sender, RoutedEventArgs e)
+    {
+        if (Current?.CloudOpen == true) { await Run(ReturnToMail); return; }
+        await Run(() => OpenCloud());
     }
     private BrowserSession? Current => Profiles.SelectedItem is AccountProfile p ? sessions.GetValueOrDefault(p.Id) : null;
     public MainWindow(LocalStore store, bool desktopFeatures = false, Func<string, bool>? confirmReplyExit = null)
@@ -106,7 +140,7 @@ public partial class MainWindow : Window
                 if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.F) { g.FocusSearch(); e.Handled = true; return; }
             }
             if (e.Key == Key.F5) { e.Handled = true; NavigateFromReader(s => s.View.Reload(), true); }
-            if (e.SystemKey == Key.Left && (reader is not null || Current?.View.CanGoBack == true)) { e.Handled = true; NavigateFromReader(s => s.View.GoBack()); }
+            if (e.SystemKey == Key.Left && (reader is not null || Current?.ActiveView.CanGoBack == true)) { e.Handled = true; NavigateFromReader(s => s.View.GoBack()); }
         };
         if (desktopFeatures)
         {
@@ -144,6 +178,7 @@ public partial class MainWindow : Window
         BrowserHost.Visibility = keepReading ? Visibility.Hidden : Visibility.Visible;
         Current?.SetReadingOnly(keepReading);
         ReaderButton.Content = "Только важное";
+        if (Current?.CloudOpen == true) UpdateWorkspace();
     }
     private async void Reader_Click(object sender, RoutedEventArgs e)
     {
@@ -193,7 +228,7 @@ public partial class MainWindow : Window
         ResetReader(keepReaderMode);
         foreach (var pane in gmail.Values) pane.SetActive(false);
         GmailHost.Visibility = Visibility.Collapsed;
-        ReaderButton.Visibility = PauseButton.Visibility = BackButton.Visibility = Visibility.Visible;
+        CloudButton.Visibility = ReaderButton.Visibility = PauseButton.Visibility = BackButton.Visibility = Visibility.Visible;
         foreach (var s in sessions.Values) s.SetActive(false);
         EmptyLabel.Visibility = Profiles.SelectedItem is AccountProfile ? Visibility.Collapsed : Visibility.Visible;
         if (Profiles.SelectedItem is not AccountProfile profile) return;
@@ -201,12 +236,14 @@ public partial class MainWindow : Window
         if (profile.Provider == MailProvider.Gmail)
         {
             ReaderHost.Visibility = Visibility.Collapsed; BrowserHost.Visibility = Visibility.Hidden; GmailHost.Visibility = Visibility.Visible;
-            ReaderButton.Visibility = PauseButton.Visibility = BackButton.Visibility = Visibility.Collapsed;
+            CloudButton.Visibility = ReaderButton.Visibility = PauseButton.Visibility = BackButton.Visibility = Visibility.Collapsed;
             EnsureGmail(profile).SetActive(true); ConnectionStatus.Text = profile.StatusText; Status.Text = "Gmail · официальный API"; return;
         }
         if (!sessions.TryGetValue(profile.Id, out var session))
         {
             session = new BrowserSession(store, this, text => { if (Profiles.SelectedItem is AccountProfile p && p.Id == profile.Id) Status.Text = text; }, () => paused);
+            session.CloudRequested += url => { if (ReferenceEquals(Current, session)) _ = Run(() => OpenCloud(url)); };
+            session.MailRequested += () => { if (ReferenceEquals(Current, session)) _ = Run(ReturnToMail); };
             sessions.Add(profile.Id, session); BrowserHost.Children.Add(session.Surface);
             try { await session.Initialize(profile.Id); }
             catch { sessions.Remove(profile.Id); BrowserHost.Children.Remove(session.Surface); session.Dispose(); throw; }
@@ -214,7 +251,8 @@ public partial class MainWindow : Window
         session.SetReadingOnly(readerMode);
         session.SetActive(true);
         ConnectionStatus.Text = profile.StatusText;
-        if (readerMode) await OpenReader();
+        if (readerMode && !session.CloudOpen) await OpenReader();
+        UpdateWorkspace();
     }
     private async void Profiles_SelectionChanged(object sender, SelectionChangedEventArgs e) => await Run(ShowProfile);
     private void ProfileActions_Click(object sender, RoutedEventArgs e)
@@ -225,11 +263,12 @@ public partial class MainWindow : Window
         ProfileActionsButton.ContextMenu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
         ProfileActionsButton.ContextMenu.IsOpen = true;
     }
-    private void Back_Click(object sender, RoutedEventArgs e) { if ((reader is not null || Current?.View.CanGoBack == true)) NavigateFromReader(s => s.View.GoBack()); }
+    private void Back_Click(object sender, RoutedEventArgs e) { if ((reader is not null || Current?.ActiveView.CanGoBack == true)) NavigateFromReader(s => s.View.GoBack()); }
     private void Reload_Click(object sender, RoutedEventArgs e) { if (CurrentGmail is { } g) { g.RequestRefresh(); return; } if (Current is not null) NavigateFromReader(s => s.View.Reload(), true); else _ = Run(ShowProfile); }
-    private void Home_Click(object sender, RoutedEventArgs e)
+    private async void Home_Click(object sender, RoutedEventArgs e)
     {
         if (CurrentGmail is { } g) { g.Inbox(); return; }
+        if (Current?.CloudOpen == true) await Run(ReturnToMail);
         if (reader is { IsReplyVisible: false } native) { _ = Run(native.OpenInbox); return; }
         NavigateFromReader(s => s.View.CoreWebView2.Navigate("https://e.mail.ru/inbox/"), true);
     }
@@ -288,7 +327,7 @@ public partial class MainWindow : Window
         }
         if (Current is not { } current) return;
         if (MessageBox.Show(this, "Выйти из этого ящика и удалить его локальные cookies, кэш и данные сайтов? Несохранённый текст будет потерян. Письма на сервере останутся.", "Очистка сессии", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-        await Run(async () => { CloseReader(); await current.ClearData(); current.View.CoreWebView2.Navigate("https://e.mail.ru/inbox/"); store.Log("session_cleared"); }, stopCache: true);
+        await Run(async () => { CloseReader(); await current.ClearData(); UpdateWorkspace(); current.View.CoreWebView2.Navigate("https://e.mail.ru/inbox/"); store.Log("session_cleared"); }, stopCache: true);
     }
     private async void Remove_Click(object sender, RoutedEventArgs e)
     {
@@ -297,7 +336,7 @@ public partial class MainWindow : Window
         await Run(async () =>
         {
             if (gmail.Remove(p.Id, out var g)) { await g.ClearData(); g.Dispose(); GmailHost.Children.Remove(g); }
-            else if (Current is { } current) { CloseReader(); await current.ClearData(); current.Dispose(); BrowserHost.Children.Remove(current.Surface); sessions.Remove(p.Id); }
+            else if (Current is { } current) { CloseReader(); await current.ClearData(); current.Dispose(); BrowserHost.Children.Remove(current.Surface); if (current.CloudSurface is { } surface) BrowserHost.Children.Remove(surface); sessions.Remove(p.Id); }
             store.Settings.Profiles.Remove(p); store.Settings.ActiveProfile = store.Settings.Profiles.FirstOrDefault()?.Id; store.Save();
             RefreshProfiles(store.Settings.ActiveProfile); await ShowProfile();
         }, stopCache: true);
