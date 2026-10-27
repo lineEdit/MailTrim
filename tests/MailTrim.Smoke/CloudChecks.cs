@@ -114,6 +114,7 @@ internal static class CloudChecks
             {
                 var authView = (WebView2)authWindow.Content;
                 Fixture(authView);
+                await Loaded(authView, "window.opener !== null");
                 await Navigate(authView, "https://account.mail.ru/__mailtrim_cloud_auth");
                 await Navigate(authView, "https://e.mail.ru/inbox/auth-complete");
                 check(!authRoutedToMail && window.OwnedWindows.Cast<Window>().Contains(authWindow)
