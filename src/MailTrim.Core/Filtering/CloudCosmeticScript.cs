@@ -19,11 +19,13 @@ public static class CloudCosmeticScript
       const offer = node => {
         const value = text(node);
         if (value.length > 5000) return false;
-        const controls = [...node.querySelectorAll('button,a,[role="button"],div,span')].filter(actionable);
-        const action = pattern => controls.some(control => pattern.test(text(control)));
+        const controls = [...node.querySelectorAll('button,a,[role="button"],div,span')];
+        const action = pattern => controls.some(control => pattern.test(text(control)) && actionable(control));
         // Product/news invitations often have neither a price nor an ERID label.
         // Require both promotional copy and its matching call to action.
-        const channel = /(?:подписывайтесь|подпишитесь|присоединяйтесь|наш\s+канал|официальн[а-я]*\s+канал)/iu.test(value)
+        const invitation = /подписывайтесь|подпишитесь|присоединяйтесь/iu.test(value)
+          || /наш\s+канал|официальн[а-я]*\s+канал/iu.test(value) && /следите|будьте в курсе|новост|обновлен|акци/iu.test(value);
+        const channel = invitation
           && /канал|сообщество/iu.test(value) && /\bMAX\b|макс|телеграм|telegram|вконтакте|\bVK\b|новост|обновлен|акци/iu.test(value);
         if (channel && action(/^(?:Подписаться|Подписаться на канал|Присоединиться|Открыть канал|Перейти в канал)$/iu)) return true;
         const app = /(?:установите|скачайте|обновите|попробуйте|мобильное).{0,90}приложен/iu.test(value)
@@ -50,6 +52,19 @@ public static class CloudCosmeticScript
         if (!['fixed','absolute'].includes(s.position) || r.width < innerWidth * .7 || r.height < innerHeight * .7) return false;
         const color = s.backgroundColor.match(/[\d.]+/g)?.map(Number);
         return !!color && color.length >= 3 && (color.length < 4 || color[3] > .02);
+      };
+      const decoration = node => {
+        if (protectedNode(node) || node.matches('[role="dialog"]') || node.querySelector('[role="dialog"]')) return false;
+        const value = text(node);
+        if (value && !closeLabel(value)) return false;
+        const controls = [...node.querySelectorAll('button,a,[role="button"]')];
+        if (node.matches('button,a,[role="button"]')) controls.push(node);
+        return controls.every(control => {
+          const label = (control.getAttribute('aria-label') || control.getAttribute('title') || text(control)).trim();
+          const r = control.getBoundingClientRect();
+          return !control.matches('a') && r.width <= 64 && r.height <= 64
+            && (closeLabel(label) || !label && !!control.querySelector('svg'));
+        });
       };
       const restore = (root, state) => { root.removeAttribute(attribute); for (const node of state.shades) node.removeAttribute(attribute); roots.delete(root); };
       const hide = node => { if (node.getAttribute(attribute) !== 'true') node.setAttribute(attribute,'true'); };
@@ -85,22 +100,21 @@ public static class CloudCosmeticScript
               if (checked.has(panel)) continue; checked.add(panel);
               if (protectedNode(panel)) break;
               if (roots.has(panel) || !offer(panel) || !overlay(panel)) continue;
-              const rect = panel.getBoundingClientRect();
-              const close = [...panel.querySelectorAll('button,[role="button"]')].find(control => {
-                const label = (control.getAttribute('aria-label') || control.getAttribute('title') || text(control)).trim();
-                const r = control.getBoundingClientRect();
-                return closeLabel(label) && r.width > 0 && r.width <= 64 && r.height <= 64
-                  && r.top >= rect.top - 8 && r.top <= rect.top + 72 && r.right >= rect.right - 80;
-              });
               let root = panel;
-              // Include only empty/close decoration around this one identified offer.
+              // Include decorative artwork and close controls around this one
+              // offer, even when the site puts its copy in a separate inner box.
               for (let parent = root.parentElement, level = 0; parent && level < 8 && !parent.matches('body,html,main,[role="main"]'); parent = root.parentElement, level++) {
                 if (protectedNode(parent)) break;
                 const extra = [...parent.children].filter(child => child !== root);
-                if (extra.some(child => !shade(child) && !(closeLabel(text(child)) && !child.querySelector(protectedContent)))) break;
+                if (extra.some(child => !shade(child) && !decoration(child))) break;
                 root = parent;
               }
               if (roots.has(root)) break;
+              const close = [...root.querySelectorAll('button,[role="button"]')].find(control => {
+                const label = (control.getAttribute('aria-label') || control.getAttribute('title') || text(control)).trim();
+                const r = control.getBoundingClientRect();
+                return closeLabel(label) && r.width > 0 && r.width <= 64 && r.height > 0 && r.height <= 64;
+              });
               const shades = new Set();
               for (const sibling of root.parentElement?.children || []) if (sibling !== root && shade(sibling)) shades.add(sibling);
               roots.set(root, { shades, dialogs: new Set(root.querySelectorAll('[role="dialog"]')) });

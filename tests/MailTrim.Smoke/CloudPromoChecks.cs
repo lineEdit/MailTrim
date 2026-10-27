@@ -92,6 +92,8 @@ internal static class CloudPromoChecks
                 "Cloud MAX promo filtering preserves working upload, rename, share and delete dialogs");
             check(await Is("document.getElementById('ordinary-notice').getBoundingClientRect().height > 0 && document.getElementById('ordinary-notice').textContent.includes('Что нового в Mail') && !window.workingCloseClicks"),
                 "Cloud preserves an ordinary notice with the same heading when it contains no marketing invitation");
+            check(await Is("document.getElementById('folder-invitation').getBoundingClientRect().height > 0 && !window.folderJoinClicks && !window.workingCloseClicks"),
+                "Cloud preserves a real folder invitation named Our MAX channel with its working Join control");
             await core.ExecuteScriptAsync("""
                 window.maxReplacementLeaks=0;
                 let maxReplacements=0;
@@ -158,11 +160,11 @@ internal static class CloudPromoChecks
             var start = Fixture.IndexOf("<div id=\"offer-shade\"", StringComparison.Ordinal);
             var end = Fixture.IndexOf("<input id=\"auth-password\"", start, StringComparison.Ordinal);
             var html = Fixture[..start] + """
-                <div id="offer-shade" class="p39"><div id="offer-panel" class="p41"><button class="p43" aria-label="Закрыть">×</button><div class="p45"></div><h2>Что нового в Mail</h2><p>Подписывайтесь на наш канал в MAX, чтобы быть в курсе обновлений и акций</p><button onclick="cloudCtaClicks++">Подписаться</button></div></div>
+                <div id="offer-shade" class="p39"><div id="offer-panel" class="p41"><button class="p43" aria-label="Закрыть">×</button><div class="p45" aria-hidden="true"><img alt="" width="300" height="135" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='135'%3E%3Crect width='300' height='135' fill='%2308f'/%3E%3C/svg%3E"></div><div id="max-copy"><h2>Что нового в Mail</h2><p>Подписывайтесь на наш канал в MAX, чтобы быть в курсе обновлений и акций</p><button onclick="cloudCtaClicks++">Подписаться</button></div></div></div>
                 """ + Fixture[end..];
-            return html.Replace("window.cloudCtaClicks=0;", "window.cloudCtaClicks=0;window.maxPreviewCtaClicks=0;", StringComparison.Ordinal)
+            return html.Replace("window.cloudCtaClicks=0;", "window.cloudCtaClicks=0;window.maxPreviewCtaClicks=0;window.folderJoinClicks=0;", StringComparison.Ordinal)
                 .Replace("<div role=\"row\">Отчёт.xlsx", "<div role=\"row\" id=\"max-campaign-file\">Что нового в Mail — канал в MAX — Подписаться.pdf<button>Открыть</button></div><div role=\"row\">Отчёт.xlsx", StringComparison.Ordinal)
-                .Replace("<div id=\"offer-shade\"", "<div id=\"ordinary-notice\" class=\"working\" role=\"dialog\" style=\"top:570px\"><h2>Что нового в Mail</h2><p>Файл сохранён. Синхронизация завершена.</p><button>Понятно</button><button aria-label=\"Закрыть\" onclick=\"workingCloseClicks++\">×</button></div><div id=\"offer-shade\"", StringComparison.Ordinal)
+                .Replace("<div id=\"offer-shade\"", "<div id=\"ordinary-notice\" class=\"working\" role=\"dialog\" style=\"top:570px\"><h2>Что нового в Mail</h2><p>Файл сохранён. Синхронизация завершена.</p><button>Понятно</button><button aria-label=\"Закрыть\" onclick=\"workingCloseClicks++\">×</button></div><div id=\"folder-invitation\" class=\"working\" role=\"dialog\" style=\"left:500px;top:470px;width:400px;height:130px\"><h2>Общая папка</h2><p>Вас пригласили в папку «Наш канал MAX».</p><button onclick=\"folderJoinClicks++\">Присоединиться</button><button aria-label=\"Закрыть\" onclick=\"workingCloseClicks++\">×</button></div><div id=\"offer-shade\"", StringComparison.Ordinal)
                 .Replace("<div id=\"preview-document\" role=\"document\">", "<div id=\"preview-document\" role=\"document\"><section id=\"max-preview\"><h3>Что нового в Mail</h3><p>Подписывайтесь на наш канал в MAX, чтобы быть в курсе обновлений и акций</p><button onclick=\"maxPreviewCtaClicks++\">Подписаться</button></section>", StringComparison.Ordinal);
         }
     }
