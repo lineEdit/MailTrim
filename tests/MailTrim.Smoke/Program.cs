@@ -86,10 +86,10 @@ internal static class Program
                     await ImageChecks.Run(a, host, Check); result = 0; return;
                 }
                 await Navigate(a, "https://e.mail.ru/__mailtrim_startup");
-                Check(await a.View.CoreWebView2.ExecuteScriptAsync("startupCSS && startupGuard && startupKnownHidden") == "true", "startup CSS and guard precede page scripts and DOMContentLoaded");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("startupCSS && !startupGuard && startupKnownHidden") == "true", "startup CSS precedes page scripts without a whole-page wait");
                 await WaitForScript(a, "startupFrames > 0 && !document.documentElement.hasAttribute('data-mailtrim-pending')");
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("!startupLeaked && getComputedStyle(document.getElementById('known-banner')).display === 'none' && getComputedStyle(document.getElementById('semantic-banner')).display === 'none' && getComputedStyle(document.documentElement).opacity !== '0'") == "true", "startup frames never expose top banners and cleaned page becomes visible");
-                Check(await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('startup-mail').getBoundingClientRect().height > 0") == "true", "startup guard preserves real message content");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('startup-mail').getBoundingClientRect().height > 0") == "true", "startup filtering preserves real message content");
                 await a.View.CoreWebView2.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, false, false));
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("!document.documentElement.hasAttribute('data-mailtrim-pending') && getComputedStyle(document.getElementById('known-banner')).display !== 'none' && getComputedStyle(document.getElementById('semantic-banner')).display !== 'none'") == "true", "pausing filters releases startup guard and restores banners");
                 await Navigate(a, "https://e.mail.ru/__mailtrim_top_preloader");
@@ -110,6 +110,10 @@ internal static class Program
                 Check(true, "persistent top-slot CSS restores real headings and forms");
                 await a.View.CoreWebView2.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, false, false));
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("!document.querySelector('[data-mailtrim-top-host]') && document.getElementById('top-slot').getBoundingClientRect().height === 90") == "true", "pausing filters removes persistent host selectors and restores the original slot");
+                await Navigate(a, "https://e.mail.ru/__mailtrim_rgba_skeleton");
+                await WaitForScript(a, "window.nestedDone === true");
+                Check(await a.View.CoreWebView2.ExecuteScriptAsync("nestedLeaks.length===0 && document.getElementById('nested-quoted').getBoundingClientRect().height>0") == "true", "nested translucent top skeleton is removed before paint without hiding quoted message graphics");
+
                 await Navigate(a, "https://e.mail.ru/__mailtrim_fixture");
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("getComputedStyle(document.querySelector('[data-testid=advertising]')).display") == "\"none\"", "cosmetics injected on trusted origin");
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("getComputedStyle(document.getElementById('message')).display") != "\"none\"", "message content remains visible");
@@ -789,7 +793,7 @@ internal static class Program
                     var activeList = ((DockPanel)((ReaderPane)readerHost.Children[0]).Children[0]).Children.OfType<ListBox>().Single();
                     Check(activeList.Items.Cast<ReaderLetter>().Single().Sender == store.Settings.Profiles[index].Name, "switched reader shows only selected account cache");
                 }
-                var surfaces = browserHost.Children.OfType<BrowserPresentation>().ToArray();
+                var surfaces = browserHost.Children.OfType<BrowserSurface>().ToArray();
                 var firstView = surfaces.First().Children.OfType<Microsoft.Web.WebView2.Wpf.WebView2>().Single();
                 Check(surfaces.Length == 2 && browserHost.Visibility == Visibility.Hidden && surfaces.All(v => !v.IsVisible), "reader keeps source web surfaces invisible across account switches");
 
@@ -912,6 +916,8 @@ internal static class Program
         session.View.CoreWebView2.WebResourceRequested += async (_, e) =>
         {
             var fixturePath = new Uri(e.Request.Uri).AbsolutePath;
+            if (fixturePath == "/__mailtrim_rgba_skeleton")
+                e.Response = session.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(File.ReadAllText(Path.Combine(AppContext.BaseDirectory,"Fixtures","nested-skeleton.html")))),200,"OK","Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
             if (fixturePath == "/__mailtrim_startup")
                 e.Response = session.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "mail-startup.html")))), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
             if (fixturePath == "/__mailtrim_top_preloader")

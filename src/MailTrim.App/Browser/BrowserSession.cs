@@ -9,7 +9,7 @@ namespace MailTrim.App;
 public sealed class BrowserSession : IDisposable
 {
     public WebView2 View { get; } = new();
-    public BrowserPresentation Surface { get; }
+    public BrowserSurface Surface { get; }
     public Guid ProfileId { get; private set; }
     public LocalStore Store => store;
     private ReaderDataService? readerData;
@@ -61,7 +61,7 @@ public sealed class BrowserSession : IDisposable
     public BrowserSession(LocalStore store, Window owner, Action<string> status, Func<bool> paused, Action<string>? externalHandler = null)
     {
         (this.store, this.owner, this.status, this.paused, this.externalHandler) = (store, owner, status, paused, externalHandler);
-        Surface = new BrowserPresentation(View, () => store.Settings.CosmeticFilters && !paused());
+        Surface = new BrowserSurface(View);
     }
 
     public async Task Initialize(Guid profile, bool background = false)
@@ -72,7 +72,7 @@ public sealed class BrowserSession : IDisposable
         await View.EnsureCoreWebView2Async(environment);
         if (disposed) return;
         await Configure(View, false, background);
-        Surface.Initialize(View.CoreWebView2, background);
+        Surface.Initialize(background);
         if (!background) View.CoreWebView2.Navigate("https://e.mail.ru/inbox/");
     }
 
@@ -203,7 +203,6 @@ public sealed class BrowserSession : IDisposable
     }
     public async Task ClearData()
     {
-        Surface.ClearPreview();
         ReaderState = null; ReaderReplyOpen = false; readerData?.Prepared.Clear(); Cache.Clear();
         foreach (var p in popups.ToArray()) p.Window.Close();
         View.CoreWebView2.Stop();
@@ -234,7 +233,7 @@ public sealed class BrowserSession : IDisposable
     {
         disposed = true; readerData?.Dispose();
         foreach (var p in popups.ToArray()) p.Window.Close();
-        Surface.Dispose(); View.Dispose(); scripts.Clear();
+        View.Dispose(); scripts.Clear();
     }
 }
 

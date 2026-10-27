@@ -1,0 +1,26 @@
+<!doctype html><html><head><style>
+body{margin:0;background:white;font:14px Arial}
+.letter-list__react{position:fixed;left:60px;top:70px;width:900px;height:500px}
+.reservation{height:90px;display:flex;gap:30px}
+.creative{width:435px;display:flex;gap:12px;align-items:center}
+.picture{width:160px;height:90px;border-radius:14px;background:rgba(0,16,61,.06);flex-shrink:0}
+.bars{width:250px}.bar{height:8px;width:250px;margin:8px 0;background:rgba(0,16,61,.06);border-radius:8px}.bar:first-child{width:50px}
+.llct{height:400px}.row{height:40px}
+</style></head><body>
+<main class="letter-list__react"><div class="hash-wrapper"><div id="nested-slot" class="reservation">
+<div class="creative"><div class="picture"></div><div class="bars"><div class="bar"></div><div class="bar"></div></div></div>
+<div class="creative"><div class="picture"></div><div class="bars"><div class="bar"></div><div class="bar"></div></div></div>
+</div></div><div id="nested-list" class="llct"><button>Фильтр</button><div class="row"><a class="js-letter-list-item" href="/inbox/123">Настоящее письмо</a></div></div></main>
+<div class="letter-body" style="position:fixed;top:600px;left:60px;width:900px"><div class="reservation" id="nested-quoted"><div class="creative"><div class="picture"></div><div class="bars"><div class="bar"></div></div></div><div class="creative"><div class="picture"></div><div class="bars"><div class="bar"></div></div></div></div></div>
+<script>
+window.nestedDone=false;window.nestedLeaks=[];window.nestedFrames=0;
+function audit(){
+ const slot=document.getElementById('nested-slot'),list=document.getElementById('nested-list');
+ if(slot.getBoundingClientRect().height!==0 || list.getBoundingClientRect().top!==70)nestedLeaks.push(nestedFrames);
+ if(++nestedFrames<4){
+   const old=slot.outerHTML;slot.outerHTML=old.replace('class="reservation"','class="reservation hash-'+nestedFrames+'"');
+   requestAnimationFrame(audit);
+ }else nestedDone=true;
+}
+requestAnimationFrame(audit);
+</script></body></html>

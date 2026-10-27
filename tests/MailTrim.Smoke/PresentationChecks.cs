@@ -2,8 +2,6 @@ using System.IO;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
 using MailTrim.App;
 using MailTrim.Core;
 using Microsoft.Web.WebView2.Core;
@@ -12,23 +10,11 @@ namespace MailTrim.Smoke;
 
 internal static class PresentationChecks
 {
-    public static async Task Ready(BrowserSession session)
-    {
-        try { await Until(() => !session.Surface.IsPending && session.View.Visibility == Visibility.Visible); }
-        catch
-        {
-            // These diagnostics run only against the synthetic fixture profile.
-            Console.WriteLine("Presentation diagnostic: " + await session.View.CoreWebView2.ExecuteScriptAsync("(()=>{try{return window.__mailtrimPresentation?.()}catch(e){return {error:e.name+':'+e.message}}})()"));
-            foreach (var name in new[] { "waitingDocument", "blockedDocument", "acceptedDocument", "generation", "polling", "capturing" })
-                Console.WriteLine(name+"="+typeof(BrowserPresentation).GetField(name,System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)?.GetValue(session.Surface));
-            Console.WriteLine("surface="+session.Surface.Visibility+", requested="+session.Surface.RequestedVisibility+", visible="+session.Surface.IsVisible+", view="+session.View.Visibility);
-            throw;
-        }
-    }
+    public static Task Ready(BrowserSession session) => Until(() => session.View.Visibility == Visibility.Visible);
     private static async Task Until(Func<bool> condition)
     {
-        for (var n = 0; n < 400; n++) { if (condition()) return; await Task.Delay(25); }
-        throw new TimeoutException("presentation_condition");
+        for(var i=0;i<200;i++){if(condition())return;await Task.Delay(25);}
+        throw new TimeoutException("live_browser_condition");
     }
     public static async Task Run(LocalStore store, Grid host, Window window, Action<bool, string> check)
     {
@@ -43,73 +29,34 @@ internal static class PresentationChecks
             core.WebResourceRequested += Fixture;
             session.SetActive(true);
             await Navigate("https://e.mail.ru/inbox/render-first"); await Ready(session);
-            await Until(() => session.Surface.HasPreview);
-            check(await core.ExecuteScriptAsync("window.__mailtrimPresentation().ready && getComputedStyle(document.documentElement).opacity==='1' && document.getElementById('banner').getBoundingClientRect().height===0") == "true", "only a cleaned and settled first document is published");
-            check(!core.Settings.IsWebMessageEnabled, "presentation state polling keeps the page-to-host message channel disabled");
-            var next = Navigate("https://e.mail.ru/inbox/render-next");
-            await Until(() => session.Surface.IsPending);
-            check(session.View.Visibility == Visibility.Hidden && session.Surface.HasPreview, "navigation hides the live browser and preserves its previous clean frame in memory");
-            var bitmap = new RenderTargetBitmap((int)session.Surface.ActualWidth, (int)session.Surface.ActualHeight, 96, 96, PixelFormats.Pbgra32);
-            bitmap.Render(session.Surface);
-            var png = new PngBitmapEncoder(); png.Frames.Add(BitmapFrame.Create(bitmap));
-            using (var file = File.Create(Path.Combine(store.Root, "presentation-synthetic.png"))) png.Save(file);
-            await next; await Ready(session);
-            check(await core.ExecuteScriptAsync("!window.badPaint && document.getElementById('subject').textContent==='Next message'") == "true", "delayed next document never publishes its unfiltered banner frame");
+            check(session.Surface.Children.Count==1 && session.Surface.Children[0]==session.View,
+                "original mode contains only the live browser without a screenshot or waiting overlay");
+            check(await core.ExecuteScriptAsync("typeof window.__mailtrimPresentation==='undefined' && !document.documentElement.hasAttribute('data-mailtrim-render-pending') && getComputedStyle(document.documentElement).opacity==='1'")=="true",
+                "no whole-page render gate or readiness polling bridge remains");
+            var next=Navigate("https://e.mail.ru/inbox/render-next");await Task.Delay(50);
+            check(session.View.Visibility==Visibility.Visible,"network navigation does not hide the browser behind a preparation screen");
+            await next;
+            await core.ExecuteScriptAsync("history.pushState(null,'','/inbox/render-spa');document.getElementById('subject').textContent='SPA message'");
+            check(session.View.Visibility==Visibility.Visible && await core.ExecuteScriptAsync("getComputedStyle(document.documentElement).opacity==='1'")=="true",
+                "SPA transitions do not introduce page hiding or a debounce delay");
             await core.ExecuteScriptAsync("""
-                history.pushState(null,'','/inbox/render-spa');
-                document.getElementById('subject').textContent='SPA message';
-                setTimeout(()=>document.getElementById('banner').replaceWith(Object.assign(document.createElement('div'),{id:'banner',className:'js-banner-wrapper-container',textContent:'Late banner'})),120);
+                document.body.insertAdjacentHTML('beforeend',`<div id="game-shade" style="position:fixed;inset:0;background:#8888"><div id="game-dialog" style="position:absolute;left:100px;top:50px;width:420px;height:400px;background:white"><button aria-label="Закрыть" style="position:absolute;right:8px;top:8px;width:32px;height:32px">×</button><h2>Игра, чтобы вернуть лето!</h2><p>Разыгрываем призы.</p><div style="cursor:pointer" onclick="window.gameClicked=true">Играть</div><div>Сроки акции. erid: 2Vexample123</div></div></div>`);
+                requestAnimationFrame(()=>window.gameLeaked=document.getElementById('game-dialog').getBoundingClientRect().height>0);
                 """);
-            await Until(() => session.Surface.IsPending); check(session.View.Visibility == Visibility.Hidden, "SPA transitions enter the same preparation stage as full navigations");
-            await Ready(session);
-            check(await core.ExecuteScriptAsync("!window.badPaint && document.getElementById('banner').getBoundingClientRect().height===0 && document.getElementById('subject').textContent==='SPA message'") == "true", "SPA updates settle after late ad insertion before publication");
-            for (var i=0;i<3;i++)
-            {
-                await core.ExecuteScriptAsync($"history.pushState(null,'','/inbox/render-race-{i}');document.getElementById('subject').textContent='Rapid {i}'");
-                await Until(() => session.Surface.IsPending); await Ready(session);
-            }
-            check(true, "rapid route changes remain usable while previous preview capture may still be completing");
-
-            await core.ExecuteScriptAsync("""
-                document.body.insertAdjacentHTML('beforeend',`<div id="game-shade" style="position:fixed;inset:0;background:#8888"><div id="game-dialog" style="position:absolute;left:100px;top:50px;width:420px;height:400px;background:white"><button aria-label="Закрыть" style="position:absolute;right:8px;top:8px;width:32px;height:32px">×</button><h2>Игра, чтобы вернуть лето!</h2><p>Соберите летние впечатления и запрыгните повыше! Разыгрываем призы.</p><div style="cursor:pointer" onclick="window.gameActionClicked=true">Играть</div><div>Сроки акции: 29.09–10.11. erid: 2Vexample123</div></div></div>`);
-                requestAnimationFrame(()=>window.gameLeaked=getComputedStyle(document.documentElement).opacity!=='0' && document.getElementById('game-dialog').getBoundingClientRect().height>0);
-                """);
-            await Task.Delay(400); await Ready(session);
-            check(await core.ExecuteScriptAsync("!window.gameLeaked && !window.gameActionClicked && document.getElementById('game-shade').getBoundingClientRect().height===0 && document.getElementById('game-dialog').getBoundingClientRect().height===0") == "true", "an erid-labelled game campaign is removed with its shade without a RuStore title");
-            await core.ExecuteScriptAsync("document.getElementById('game-dialog').setAttribute('role','dialog');window.adAnimation=setInterval(()=>document.getElementById('game-dialog').style.opacity=String(Math.random()),12)");
-            await Task.Delay(400); await Ready(session);
-            check(await core.ExecuteScriptAsync("window.__mailtrimPresentation().ready") == "true", "continuous animation inside a filtered ad cannot keep the preparation stage busy");
-            await core.ExecuteScriptAsync("clearInterval(window.adAnimation)");
-            await core.ExecuteScriptAsync("""
-                document.getElementById('game-shade').remove();
-                document.body.insertAdjacentHTML('beforeend','<div class=letter-body id=protected-mail><h2>Игра, чтобы вернуть лето!</h2><p>Разыгрываем призы. erid: 2Vexample123</p><button>Играть</button></div><div role=dialog id=help-dialog style="position:fixed;left:600px;top:50px;width:280px;height:200px;background:white"><h2>Что такое erid?</h2><p>Идентификатор рекламы в акции.</p><button>Понятно</button></div>');
-                """);
-            await Task.Delay(400);
-            check(await core.ExecuteScriptAsync("document.getElementById('protected-mail').getBoundingClientRect().height>0 && document.getElementById('help-dialog').getBoundingClientRect().height>0") == "true", "campaign-like message content and a working explanation dialog stay visible");
-            await core.ExecuteScriptAsync("window.workingAnimation=setInterval(()=>document.getElementById('help-dialog').style.opacity=String(.8+Math.random()*.2),12)");
-            await Until(() => session.Surface.IsPending); await Ready(session);
-            check(true, "continuously changing working content still reaches a cleaned bounded presentation");
-            await core.ExecuteScriptAsync("clearInterval(window.workingAnimation)");
-            await core.ExecuteScriptAsync("document.getElementById('protected-mail').remove();document.getElementById('help-dialog').remove();document.body.insertAdjacentHTML('beforeend','<div class=compose-app><textarea>Unsent draft</textarea></div>')");
-            await Until(() => !session.Surface.HasPreview);
-            check(true, "composition content clears the in-memory browser preview");
-            await Navigate("https://auth.mail.ru/login/render-test");
-            await Ready(session);
-            check(!session.Surface.HasPreview && !core.Settings.IsPasswordAutosaveEnabled && !core.Settings.IsWebMessageEnabled, "official authentication stays usable without a stored preview or password autosave");
-            paused = true; await session.ApplySettings();
-            await Navigate("https://e.mail.ru/inbox/render-first"); await Ready(session);
-            check(await core.ExecuteScriptAsync("!document.documentElement.hasAttribute('data-mailtrim-render-pending') && document.getElementById('banner').getBoundingClientRect().height>0") == "true", "pausing filters releases both DOM and native presentation guards");
-            paused = false; await session.ApplySettings(); await Ready(session);
-            check(await core.ExecuteScriptAsync("document.getElementById('banner').getBoundingClientRect().height===0") == "true", "reenabling filtering restores preparation and clean presentation");
-            await core.ExecuteScriptAsync("delete window.__mailtrimPresentation");
-            await Until(() => session.Surface.IsPending);
-            check(session.View.Visibility == Visibility.Hidden && window.IsEnabled, "missing preparation state keeps raw content hidden while the application toolbar stays usable");
-            await core.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, true, false)); await Ready(session);
-            session.SetActive(false);
-            check(session.Surface.Visibility == Visibility.Collapsed && session.View.Visibility == Visibility.Collapsed, "switching profiles hides the entire presentation surface");
-            session.SetActive(true); await Ready(session);
-            session.SetReadingOnly(true);
-            check(session.Surface.Visibility == Visibility.Hidden && session.View.Visibility == Visibility.Hidden, "native reading keeps the collection browser and its presentation hidden");
+            await Task.Delay(100);
+            check(await core.ExecuteScriptAsync("!window.gameLeaked && !window.gameClicked && document.getElementById('game-shade').getBoundingClientRect().height===0")=="true",
+                "campaign and its shade are hidden before paint without freezing the page or activating its CTA");
+            await core.ExecuteScriptAsync("document.getElementById('game-shade').remove();document.body.insertAdjacentHTML('beforeend','<div class=letter-body id=quote>Разыгрываем призы. erid: 2Vexample123<button>Играть</button></div><div role=dialog id=working style=\"position:fixed;left:600px;top:50px;width:200px;height:200px\"><h2>Подтвердите действие</h2><input><button>OK</button></div>')");
+            await Task.Delay(100);
+            check(await core.ExecuteScriptAsync("document.getElementById('quote').getBoundingClientRect().height>0 && document.getElementById('working').getBoundingClientRect().height>0")=="true",
+                "message content and working dialogs remain visible in live mode");
+            await Navigate("https://auth.mail.ru/login/render-test"); await Ready(session);
+            check(!core.Settings.IsPasswordAutosaveEnabled && !core.Settings.IsWebMessageEnabled,"official authentication retains disabled password storage and host messaging");
+            paused=true;await session.ApplySettings();await Navigate("https://e.mail.ru/inbox/render-first");
+            check(await core.ExecuteScriptAsync("document.getElementById('banner').getBoundingClientRect().height>0")=="true","pausing filters restores the original page without a waiting surface");
+            session.SetActive(false);check(session.Surface.Visibility==Visibility.Collapsed,"inactive account hides its entire browser surface");
+            session.SetActive(true);check(session.View.Visibility==Visibility.Visible,"return to an account does not await readiness polling");
+            session.SetReadingOnly(true);check(session.View.Visibility==Visibility.Hidden,"native reading continues to collect with a hidden browser");
         }
         finally { host.Children.Remove(session.Surface); }
 

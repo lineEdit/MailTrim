@@ -128,8 +128,7 @@ public static class CosmeticScript
           const widened = new Set();
           const stretched = new Set();
           const watched = new WeakSet();
-          let observer, rootObserver, resizeObserver, timer, revealFrame, revealTimeout;
-          const initialGuard = compactLayout && document.readyState === 'loading';
+          let observer, rootObserver, resizeObserver, timer;
           // Mail.ru's hashed content wrapper can retain a bottom ad reservation.
           // Only expand a sole visible child aligned with a viewport-height parent.
           const fitMailArea = () => {
@@ -228,11 +227,54 @@ public static class CosmeticScript
               else slot.setAttribute('data-mailtrim-top-ad','true');
             }
             const gray = node => {
-              const c = getComputedStyle(node).backgroundColor.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/);
-              if (!c || (c[4] !== undefined && +c[4] < .95)) return false;
-              const rgb = c.slice(1,4).map(Number);
-              return Math.min(...rgb) >= 180 && Math.max(...rgb) < 250 && Math.max(...rgb) - Math.min(...rgb) <= 15;
+              const parse = color => {
+                const m=color.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/);
+                return m ? {rgb:m.slice(1,4).map(Number),a:m[4]===undefined?1:Number(m[4])} : null;
+              };
+              const front=parse(getComputedStyle(node).backgroundColor);
+              if(!front || front.a<.02)return false;
+              const layers=[];
+              for(let e=node.parentElement,n=0;e && n<8;e=e.parentElement,n++){
+                const color=parse(getComputedStyle(e).backgroundColor);
+                if(color && color.a>0){layers.push(color);if(color.a>=.99)break;}
+              }
+              let base=[255,255,255];
+              for(const color of layers.reverse())base=base.map((v,i)=>color.rgb[i]*color.a+v*(1-color.a));
+              const rgb=base.map((v,i)=>front.rgb[i]*front.a+v*(1-front.a));
+              const light=rgb.reduce((a,b)=>a+b,0)/3, back=base.reduce((a,b)=>a+b,0)/3;
+              return Math.max(...rgb)-Math.min(...rgb)<=18
+                && (light>=160 && Math.max(...rgb)<254 || back<140 && Math.abs(light-back)>=3 && Math.abs(light-back)<=65);
             };
+            // A top reservation may be INSIDE the list root. Find the paired blank
+            // pictures directly; translucent CSS fills must be blended with their surface.
+            if(document.querySelector('.letter-list__react,.llct,.letter-list,.thread,a.js-letter-list-item')){
+              const shapes=[];
+              for(const node of document.querySelectorAll('div,span')){
+                if(node.closest(protectedContent+',a.js-letter-list-item'))continue;
+                const r=node.getBoundingClientRect();
+                if(r.top<20 || r.bottom>340 || r.width<40 || r.width>350 || r.height<1 || r.height>140)continue;
+                const picture=r.width>=70 && r.height>=40;
+                const bar=r.width>=40 && r.height<=12;
+                if((picture || bar) && gray(node))shapes.push({node,r,picture,bar});
+              }
+              const cards=shapes.filter(x=>x.picture),bars=shapes.filter(x=>x.bar);
+              for(const card of cards){
+                for(let box=card.node.parentElement,n=0;box && n<8;box=box.parentElement,n++){
+                  if(box.matches('body,main,html,#app-canvas,[role="main"]') || workingContent(box))break;
+                  const r=box.getBoundingClientRect();
+                  if(r.height>190)break;
+                  if(r.width<400 || r.height<48 || r.top<20 || box.textContent.trim())continue;
+                  const inside=cards.filter(x=>box.contains(x.node));
+                  const pair=inside.some((a,i)=>inside.slice(i+1).some(b=>
+                    b.r.left-a.r.right>=80 && Math.abs(a.r.top-b.r.top)<=4
+                    && Math.abs(a.r.width-b.r.width)<=4 && Math.abs(a.r.height-b.r.height)<=4
+                    && [a,b].every(c=>bars.some(bar=>box.contains(bar.node) && bar.r.left>=c.r.right
+                      && bar.r.top>=c.r.top && bar.r.bottom<=c.r.bottom))));
+                  if(!pair)continue;
+                  box.setAttribute('data-mailtrim-top-ad','true');topSlots.add(box);rememberTopSlot(box);break;
+                }
+              }
+            }
             for (const list of document.querySelectorAll('.letter-list__react,.thread')) {
               if (list.closest(protectedContent)) continue;
               const lr = list.getBoundingClientRect();
@@ -353,8 +395,6 @@ public static class CosmeticScript
             if (!style) { style = document.createElement('style'); style.id = id; document.documentElement.appendChild(style); }
             style.textContent = selectors.filter(s => { try { document.querySelector(s); return true; } catch { return false; } })
               .map(s => s + ' { display: none !important; }').join('\n')
-              + (initialGuard ? '\nhtml[data-mailtrim-pending="true"] { opacity: 0 !important; }' : '')
-              + (compactLayout ? '\nhtml[data-mailtrim-render-pending="true"] { opacity: 0 !important; }' : '')
               + (labeledAds ? '\n[data-mailtrim-ad="true"] { display: none !important; }' : '')
               + (labeledAds ? '\n[data-mailtrim-top-ad="true"] { display: none !important; }\n' + topCSS : '')
               + (labeledAds ? `\n.js-banner-wrapper-container:not(${protectedSlot}):not(:has(${protectedContent})) { display: none !important; }` : '')
@@ -385,7 +425,6 @@ public static class CosmeticScript
             cleanAds();
             if (timer == null) timer = requestAnimationFrame(scan);
           };
-          __RENDER_GATE__
           const changed = records => {
             const withoutFill = value => (value || '').replace(/--mailtrim-top\s*:[^;]*/g,'').replace(/[;\s]/g,'');
             const relevant = records.some(record => {
@@ -398,24 +437,13 @@ public static class CosmeticScript
                   && withoutFill(record.oldValue) === withoutFill(node.getAttribute('style'))) return false;
               return true;
             });
-            if (relevant) { renderGate.mutations(records); schedule(); }
+            if (relevant) schedule();
           };
-          const reveal = () => {
-            try { scan(); }
-            finally { document.documentElement?.removeAttribute('data-mailtrim-pending'); clearTimeout(revealTimeout); }
-          };
-          const ready = () => { scan(); renderGate.begin(); revealFrame = requestAnimationFrame(reveal); };
           const start = () => {
             if (!document.documentElement || observer) return;
             rootObserver?.disconnect();
-            if (initialGuard) {
-              document.documentElement.setAttribute('data-mailtrim-pending', 'true');
-              // Fail open on slow scripts or throttled background frames; never strand login.
-              revealTimeout = setTimeout(reveal, 1500);
-              document.addEventListener('DOMContentLoaded', ready, {once:true});
-            }
             resizeObserver = new ResizeObserver(schedule);
-            apply(); renderGate.begin(); scan();
+            apply(); scan();
             observer = new MutationObserver(changed);
             observer.observe(document.documentElement, {childList:true, subtree:true, characterData:true,
               attributes:true, attributeOldValue:true, attributeFilter:['class','style','href','aria-label','title','role','hidden']});
@@ -423,10 +451,7 @@ public static class CosmeticScript
             document.addEventListener('load', schedule, true);
           };
           window.__mailtrimCleanup = () => {
-            renderGate.dispose();
-            observer?.disconnect(); rootObserver?.disconnect(); resizeObserver?.disconnect(); cancelAnimationFrame(timer); cancelAnimationFrame(revealFrame); clearTimeout(revealTimeout);
-            document.removeEventListener('DOMContentLoaded', ready);
-            document.documentElement?.removeAttribute('data-mailtrim-pending');
+            observer?.disconnect(); rootObserver?.disconnect(); resizeObserver?.disconnect(); cancelAnimationFrame(timer);
             window.removeEventListener('resize', schedule);
             document.removeEventListener('load', schedule, true);
             for (const host of topHosts.keys()) host.removeAttribute('data-mailtrim-top-host'); topHosts.clear();
@@ -443,6 +468,6 @@ public static class CosmeticScript
           if (document.documentElement) start();
           else { rootObserver = new MutationObserver(start); rootObserver.observe(document, {childList:true}); }
         })();
-        """.Replace("__RENDER_GATE__", RenderGateScript.Code).Replace("__SELECTORS__", JsonSerializer.Serialize(selectors)).Replace("__LABELED__", enabled && rules.RemoveLabeledAds ? "true" : "false").Replace("__ENABLED__", enabled ? "true" : "false");
+        """.Replace("__SELECTORS__", JsonSerializer.Serialize(selectors)).Replace("__LABELED__", enabled && rules.RemoveLabeledAds ? "true" : "false").Replace("__ENABLED__", enabled ? "true" : "false");
     }
 }
