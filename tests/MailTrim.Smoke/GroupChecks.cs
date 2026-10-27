@@ -13,7 +13,7 @@ internal static class GroupChecks
     public static async Task Run(LocalStore store, Grid host, Window window, Action<bool, string> check)
     {
         using var session = new BrowserSession(store, window, _ => { }, () => false, _ => { });
-        host.Children.Add(session.View);
+        host.Children.Add(session.Surface);
         ReaderPane? pane = null;
         var groupUrl = "https://e.mail.ru/inbox/category?kind=newsletter";
         var emptyUrl = "https://e.mail.ru/inbox/category?kind=receipts";
@@ -63,7 +63,7 @@ internal static class GroupChecks
             var delayed = await session.ReaderData.ReadFresh(new("https://e.mail.ru/inbox/delayed-body", "Чеки", "Delayed real mail", "", ""), default).WaitAsync(TimeSpan.FromSeconds(8));
             check(delayed.Blocks.Single().Text == "Late real body" && !session.ReaderData.Describe(delayed.Letter).IsGroup, "an empty loading shell is never classified as a category while a real body is loading");
         }
-        finally { pane?.Close(); if (pane is not null) host.Children.Remove(pane); host.Children.Remove(session.View); }
+        finally { pane?.Close(); if (pane is not null) host.Children.Remove(pane); host.Children.Remove(session.Surface); }
 
         void Fixture(object? sender, CoreWebView2WebResourceRequestedEventArgs e)
         {

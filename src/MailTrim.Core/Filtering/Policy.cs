@@ -102,7 +102,16 @@ public static class CosmeticScript
           const promoText = node => (node.textContent || '').replace(/[\u200b-\u200d\ufeff]/g, '').trim();
           const closeLabel = text => /^(?:закрыть|close|×|✕|x)$/iu.test(text.trim());
           const overlayProtected = protectedContent + ',.thread,.letter-list__react,.llct,.letter-list,.js-letter-list-item,[role="toolbar"],[role="alert"],form,nav';
-          const hasStoreTitle = node => [node,...node.querySelectorAll('h1,h2,h3,div,span')].some(e => storeTitle.test(promoText(e)));
+          const isKnownPromo = node => {
+            const text=promoText(node).replace(/\s+/g,' ');
+            if(text.length>5000)return false;
+            if([...node.querySelectorAll('h1,h2,h3,div,span')].some(e=>storeTitle.test(promoText(e)))
+                && /Установите\s*или\s*обновите\s*приложение/iu.test(text) && /Android/iu.test(text))return true;
+            if(!/erid\s*[:=]\s*[a-z0-9]/iu.test(text) || !/акци[яиюй]|розыгр|разыгр|приз|игр[ауы]|реклам/iu.test(text))return false;
+            return [...node.querySelectorAll('button,a,[role="button"],div,span')].some(e=>
+              /^(?:Играть|Участвовать|Узнать больше|Получить приз|Попробовать|Перейти|Купить)$/iu.test(promoText(e))
+              && (e.matches('button,a,[role="button"]') || e.hasAttribute('onclick') || getComputedStyle(e).cursor==='pointer'));
+          };
           // Once positively identified, an empty shell is still the same promo. Release
           // it as soon as the site reuses the island for meaningful working content.
           const restorePromoIslands = () => {
@@ -110,7 +119,7 @@ public static class CosmeticScript
               const text = promoText(root);
               if (!root.isConnected || root.matches(overlayProtected) || root.querySelector(overlayProtected)
                   || [...root.querySelectorAll('[role="dialog"]')].some(dialog => !state.dialogs.has(dialog))
-                  || (!hasStoreTitle(root) && text && !closeLabel(text))) { promoIslands.delete(root); continue; }
+                  || (!isKnownPromo(root) && text && !closeLabel(text))) { promoIslands.delete(root); continue; }
               root.setAttribute('data-mailtrim-promo','true'); promos.add(root);
             }
           };
@@ -296,18 +305,18 @@ public static class CosmeticScript
                 || !promoText(control) && !!control.querySelector('svg') && !control.matches('a'));
             };
             for (const heading of document.querySelectorAll('h1,h2,h3,div,span')) {
-              if (heading.closest(protectedContent) || !storeTitle.test(promoText(heading))) continue;
-              for (let panel = heading.parentElement, depth = 0; panel && depth < 10; panel = panel.parentElement, depth++) {
+              if (heading.closest(protectedContent) || !(storeTitle.test(promoText(heading)) || /erid\s*[:=]/iu.test(promoText(heading)))) continue;
+              for (let panel = heading, depth = 0; panel && depth < 12; panel = panel.parentElement, depth++) {
                 if (panel.matches('body,main,#app-canvas,[role="main"]') || panel.querySelector(overlayProtected + ',[role="dialog"]')) break;
                 const text = promoText(panel).replace(/\s+/g, ' ');
                 const r = panel.getBoundingClientRect();
                 if (text.length > 1500 || r.width > 650 || r.height > 850) break;
-                if (!/Установите\s*или\s*обновите\s*приложение/iu.test(text) || !/Android/iu.test(text) || r.width < 200 || r.height < 24) continue;
+                if (!isKnownPromo(panel) || r.width < 200 || r.height < 24) continue;
                 let root = panel;
                 // Close controls and a blank shade are decoration, not extra dialog
                 // content. Include every isolated wrapper so a white frame cannot remain.
                 for (let node = panel.parentElement, n = 0; node && n < 10; node = node.parentElement, n++) {
-                  if (node.matches('body,main,#app-canvas,[role="main"]') || node.querySelector(overlayProtected)) break;
+                  if (node.matches('body,main,#app-canvas,[role="main"],'+overlayProtected) || node.querySelector(overlayProtected)) break;
                   const siblings = [...node.children].filter(child => !child.contains(root));
                   const ownText = [...node.childNodes].filter(child => child.nodeType === 3).map(child => child.textContent).join('').trim();
                   if (ownText && !closeLabel(ownText) || !siblings.every(decoration)) break;
@@ -322,7 +331,7 @@ public static class CosmeticScript
                 const bounds = frame.getBoundingClientRect();
                 const close = [...new Set([...root.querySelectorAll('button,[role="button"],[aria-label],[title],svg')].map(node =>
                   node.matches('svg') ? node.closest('button,[role="button"],[aria-label],[title]') || node.parentElement : node))].filter(button => {
-                  if (!(button instanceof HTMLElement)) return false;
+                  if (!(button instanceof HTMLElement) || button.closest('a[href]')) return false;
                   const label = (button.getAttribute('aria-label') || button.getAttribute('title') || promoText(button)).trim();
                   const b = button.getBoundingClientRect();
                   // Locate the corner against the visible panel, not a full-screen shade.
@@ -345,6 +354,7 @@ public static class CosmeticScript
             style.textContent = selectors.filter(s => { try { document.querySelector(s); return true; } catch { return false; } })
               .map(s => s + ' { display: none !important; }').join('\n')
               + (initialGuard ? '\nhtml[data-mailtrim-pending="true"] { opacity: 0 !important; }' : '')
+              + (compactLayout ? '\nhtml[data-mailtrim-render-pending="true"] { opacity: 0 !important; }' : '')
               + (labeledAds ? '\n[data-mailtrim-ad="true"] { display: none !important; }' : '')
               + (labeledAds ? '\n[data-mailtrim-top-ad="true"] { display: none !important; }\n' + topCSS : '')
               + (labeledAds ? `\n.js-banner-wrapper-container:not(${protectedSlot}):not(:has(${protectedContent})) { display: none !important; }` : '')
@@ -375,6 +385,7 @@ public static class CosmeticScript
             cleanAds();
             if (timer == null) timer = requestAnimationFrame(scan);
           };
+          __RENDER_GATE__
           const changed = records => {
             const withoutFill = value => (value || '').replace(/--mailtrim-top\s*:[^;]*/g,'').replace(/[;\s]/g,'');
             const relevant = records.some(record => {
@@ -387,13 +398,13 @@ public static class CosmeticScript
                   && withoutFill(record.oldValue) === withoutFill(node.getAttribute('style'))) return false;
               return true;
             });
-            if (relevant) schedule();
+            if (relevant) { renderGate.mutations(records); schedule(); }
           };
           const reveal = () => {
             try { scan(); }
             finally { document.documentElement?.removeAttribute('data-mailtrim-pending'); clearTimeout(revealTimeout); }
           };
-          const ready = () => { scan(); revealFrame = requestAnimationFrame(reveal); };
+          const ready = () => { scan(); renderGate.begin(); revealFrame = requestAnimationFrame(reveal); };
           const start = () => {
             if (!document.documentElement || observer) return;
             rootObserver?.disconnect();
@@ -404,7 +415,7 @@ public static class CosmeticScript
               document.addEventListener('DOMContentLoaded', ready, {once:true});
             }
             resizeObserver = new ResizeObserver(schedule);
-            apply(); scan();
+            apply(); renderGate.begin(); scan();
             observer = new MutationObserver(changed);
             observer.observe(document.documentElement, {childList:true, subtree:true, characterData:true,
               attributes:true, attributeOldValue:true, attributeFilter:['class','style','href','aria-label','title','role','hidden']});
@@ -412,6 +423,7 @@ public static class CosmeticScript
             document.addEventListener('load', schedule, true);
           };
           window.__mailtrimCleanup = () => {
+            renderGate.dispose();
             observer?.disconnect(); rootObserver?.disconnect(); resizeObserver?.disconnect(); cancelAnimationFrame(timer); cancelAnimationFrame(revealFrame); clearTimeout(revealTimeout);
             document.removeEventListener('DOMContentLoaded', ready);
             document.documentElement?.removeAttribute('data-mailtrim-pending');
@@ -431,6 +443,6 @@ public static class CosmeticScript
           if (document.documentElement) start();
           else { rootObserver = new MutationObserver(start); rootObserver.observe(document, {childList:true}); }
         })();
-        """.Replace("__SELECTORS__", JsonSerializer.Serialize(selectors)).Replace("__LABELED__", enabled && rules.RemoveLabeledAds ? "true" : "false").Replace("__ENABLED__", enabled ? "true" : "false");
+        """.Replace("__RENDER_GATE__", RenderGateScript.Code).Replace("__SELECTORS__", JsonSerializer.Serialize(selectors)).Replace("__LABELED__", enabled && rules.RemoveLabeledAds ? "true" : "false").Replace("__ENABLED__", enabled ? "true" : "false");
     }
 }

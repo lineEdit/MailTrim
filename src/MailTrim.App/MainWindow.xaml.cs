@@ -207,9 +207,9 @@ public partial class MainWindow : Window
         if (!sessions.TryGetValue(profile.Id, out var session))
         {
             session = new BrowserSession(store, this, text => { if (Profiles.SelectedItem is AccountProfile p && p.Id == profile.Id) Status.Text = text; }, () => paused);
-            sessions.Add(profile.Id, session); BrowserHost.Children.Add(session.View);
+            sessions.Add(profile.Id, session); BrowserHost.Children.Add(session.Surface);
             try { await session.Initialize(profile.Id); }
-            catch { sessions.Remove(profile.Id); BrowserHost.Children.Remove(session.View); session.Dispose(); throw; }
+            catch { sessions.Remove(profile.Id); BrowserHost.Children.Remove(session.Surface); session.Dispose(); throw; }
         }
         session.SetReadingOnly(readerMode);
         session.SetActive(true);
@@ -297,7 +297,7 @@ public partial class MainWindow : Window
         await Run(async () =>
         {
             if (gmail.Remove(p.Id, out var g)) { await g.ClearData(); g.Dispose(); GmailHost.Children.Remove(g); }
-            else if (Current is { } current) { CloseReader(); await current.ClearData(); current.Dispose(); BrowserHost.Children.Remove(current.View); sessions.Remove(p.Id); }
+            else if (Current is { } current) { CloseReader(); await current.ClearData(); current.Dispose(); BrowserHost.Children.Remove(current.Surface); sessions.Remove(p.Id); }
             store.Settings.Profiles.Remove(p); store.Settings.ActiveProfile = store.Settings.Profiles.FirstOrDefault()?.Id; store.Save();
             RefreshProfiles(store.Settings.ActiveProfile); await ShowProfile();
         }, stopCache: true);

@@ -62,24 +62,24 @@ public sealed class ReaderPane : Grid
     private void AttachReply()
     {
         if (replyPanel is not null) return;
-        if (session.View.Parent is not Panel parent) throw new InvalidOperationException("browser_parent_required");
-        browserParent = parent; browserIndex = parent.Children.IndexOf(session.View); browserVisibility = session.View.Visibility;
+        if (session.Surface.Parent is not Panel parent) throw new InvalidOperationException("browser_parent_required");
+        browserParent = parent; browserIndex = parent.Children.IndexOf(session.Surface); browserVisibility = session.Surface.RequestedVisibility;
         var panel = new DockPanel();
         var header = new StackPanel(); DockPanel.SetDock(header, Dock.Top); panel.Children.Add(header);
         var back = new Button { Content = "← К чтению", HorizontalAlignment = HorizontalAlignment.Left };
         back.Click += async (_, _) => await ReturnToReading(); header.Children.Add(back);
         header.Children.Add(new TextBlock { Text = "Ответ в Mail.ru. Проверьте получателя и отправьте штатной кнопкой сайта. Если редактор не открылся, нажмите «Ответить» ниже.", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(8) });
-        parent.Children.Remove(session.View);
-        panel.Children.Add(session.View); session.View.Visibility = Visibility.Visible;
+        parent.Children.Remove(session.Surface);
+        panel.Children.Add(session.Surface); session.Surface.SetRequestedVisibility(Visibility.Visible);
         Children[0].IsEnabled = false; Children[1].Visibility = Visibility.Collapsed; folderPanel.IsEnabled = false;
         SetColumn(panel, 3); Children.Add(panel); replyPanel = panel; session.ReaderReplyOpen = true;
     }
     private void DetachReply()
     {
         if (replyPanel is null) return;
-        replyPanel.Children.Remove(session.View);
-        browserParent!.Children.Insert(Math.Min(browserIndex, browserParent.Children.Count), session.View);
-        session.View.Visibility = browserVisibility;
+        replyPanel.Children.Remove(session.Surface);
+        browserParent!.Children.Insert(Math.Min(browserIndex, browserParent.Children.Count), session.Surface);
+        session.Surface.SetRequestedVisibility(browserVisibility);
         Children.Remove(replyPanel); replyPanel = null; browserParent = null;
         Children[0].IsEnabled = true; Children[1].Visibility = Visibility.Visible; folderPanel.IsEnabled = true;
     }

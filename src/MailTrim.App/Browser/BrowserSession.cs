@@ -9,6 +9,7 @@ namespace MailTrim.App;
 public sealed class BrowserSession : IDisposable
 {
     public WebView2 View { get; } = new();
+    public BrowserPresentation Surface { get; }
     public Guid ProfileId { get; private set; }
     public LocalStore Store => store;
     private ReaderDataService? readerData;
@@ -18,7 +19,7 @@ public sealed class BrowserSession : IDisposable
     public void SetReadingOnly(bool reading)
     {
         ReadingOnly = reading;
-        View.Visibility = !active ? Visibility.Collapsed : reading && !ReaderReplyOpen ? Visibility.Hidden : Visibility.Visible;
+        Surface.SetRequestedVisibility(!active ? Visibility.Collapsed : reading && !ReaderReplyOpen ? Visibility.Hidden : Visibility.Visible);
     }
     public ReaderPosition? ReaderState { get; set; }
     public bool ReaderReplyOpen { get; set; }
@@ -53,12 +54,15 @@ public sealed class BrowserSession : IDisposable
     public void SetActive(bool active)
     {
         this.active = active;
-        View.Visibility = !active ? Visibility.Collapsed : ReadingOnly && !ReaderReplyOpen ? Visibility.Hidden : Visibility.Visible;
+        Surface.SetRequestedVisibility(!active ? Visibility.Collapsed : ReadingOnly && !ReaderReplyOpen ? Visibility.Hidden : Visibility.Visible);
         foreach (var p in popups.ToArray()) { if (active) p.Window.Show(); else p.Window.Hide(); }
     }
 
     public BrowserSession(LocalStore store, Window owner, Action<string> status, Func<bool> paused, Action<string>? externalHandler = null)
-        => (this.store, this.owner, this.status, this.paused, this.externalHandler) = (store, owner, status, paused, externalHandler);
+    {
+        (this.store, this.owner, this.status, this.paused, this.externalHandler) = (store, owner, status, paused, externalHandler);
+        Surface = new BrowserPresentation(View, () => store.Settings.CosmeticFilters && !paused());
+    }
 
     public async Task Initialize(Guid profile, bool background = false)
     {
@@ -68,6 +72,7 @@ public sealed class BrowserSession : IDisposable
         await View.EnsureCoreWebView2Async(environment);
         if (disposed) return;
         await Configure(View, false, background);
+        Surface.Initialize(View.CoreWebView2, background);
         if (!background) View.CoreWebView2.Navigate("https://e.mail.ru/inbox/");
     }
 
@@ -198,6 +203,7 @@ public sealed class BrowserSession : IDisposable
     }
     public async Task ClearData()
     {
+        Surface.ClearPreview();
         ReaderState = null; ReaderReplyOpen = false; readerData?.Prepared.Clear(); Cache.Clear();
         foreach (var p in popups.ToArray()) p.Window.Close();
         View.CoreWebView2.Stop();
@@ -228,7 +234,7 @@ public sealed class BrowserSession : IDisposable
     {
         disposed = true; readerData?.Dispose();
         foreach (var p in popups.ToArray()) p.Window.Close();
-        View.Dispose(); scripts.Clear();
+        Surface.Dispose(); View.Dispose(); scripts.Clear();
     }
 }
 

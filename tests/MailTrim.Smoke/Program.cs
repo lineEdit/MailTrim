@@ -15,7 +15,7 @@ internal static class Program
     [STAThread]
     public static int Main(string[] args)
     {
-        if (args.Length != 1 && !(args.Length == 2 && args[1] is "--images-only" or "--gmail-only" or "--groups-only" or "--ads-only")) { Console.Error.WriteLine("Pass an empty scratch directory for test data; optionally --images-only, --gmail-only, --groups-only or --ads-only."); return 2; }
+        if (args.Length != 1 && !(args.Length == 2 && args[1] is "--images-only" or "--gmail-only" or "--groups-only" or "--ads-only" or "--render-only")) { Console.Error.WriteLine("Pass an empty scratch directory for test data; optionally --images-only, --gmail-only, --groups-only or --ads-only."); return 2; }
         var root = Path.GetFullPath(args[0]);
         if (Directory.Exists(root) && Directory.EnumerateFileSystemEntries(root).Any()) { Console.Error.WriteLine("Test directory must be empty."); return 2; }
         var result = 1;
@@ -67,12 +67,14 @@ internal static class Program
                 }
                 await GmailChecks.Run(store, host, Check);
                 if (args.Length == 2 && args[1] == "--gmail-only") { result = 0; return; }
+                if (args.Length == 1 || args[1] == "--render-only") await PresentationChecks.Run(store, host, window, Check);
+                if (args.Length == 2 && args[1] == "--render-only") { result = 0; return; }
                 if (args.Length == 1 || args[1] == "--groups-only") await GroupChecks.Run(store, host, window, Check);
                 if (args.Length == 2 && args[1] == "--groups-only") { result = 0; return; }
                 var paused = false;
                 var a = new BrowserSession(store, window, _ => { }, () => paused, _ => { });
                 var b = new BrowserSession(store, window, _ => { }, () => paused, _ => { });
-                sessions.Add(a); sessions.Add(b); host.Children.Add(a.View); host.Children.Add(b.View);
+                sessions.Add(a); sessions.Add(b); host.Children.Add(a.Surface); host.Children.Add(b.Surface);
                 var id = Guid.NewGuid();
                 var secondProfileId = Guid.NewGuid();
                 await a.Initialize(id); await b.Initialize(secondProfileId);
@@ -404,7 +406,7 @@ internal static class Program
 
                 await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('unread-test').setAttribute('data-unread-count','0')");
                 unreadSnapshot = System.Text.Json.JsonSerializer.Deserialize<MailboxStatusScript.SnapshotResult>(await a.View.CoreWebView2.ExecuteScriptAsync(MailboxStatusScript.Snapshot), FilterRules.Json)!;
-                Check(unreadSnapshot.Unread == 0, "explicit zero unread count is retained");                var originalRequests = 0; var pane = new ReaderPane(a, () => originalRequests++); host.Children.Add(pane); a.View.Visibility = Visibility.Hidden; b.View.Visibility = Visibility.Hidden;
+                Check(unreadSnapshot.Unread == 0, "explicit zero unread count is retained");                var originalRequests = 0; var pane = new ReaderPane(a, () => originalRequests++); host.Children.Add(pane); a.Surface.SetRequestedVisibility(Visibility.Hidden); b.Surface.SetRequestedVisibility(Visibility.Hidden);
                 await pane.Start();
                 var readerList = ((DockPanel)pane.Children[0]).Children.OfType<ListBox>().Single();
                 Check(readerList.Items.Count == 1, "native reader displays extracted list");
@@ -448,22 +450,23 @@ internal static class Program
                 Check(readerList.IsEnabled && readerNavigations == searchNavigations && readerBody.Children.OfType<TextBlock>().Any(t => t.Text.Contains("Safe text")), "search result opens from cache without network");
                 await pane.SearchSaved(""); readerList.SelectedIndex = 0;
                 Check(readerList.Items.Count == 1, "clearing search restores original reader list");
-                var browserParentBeforeReply = a.View.Parent;
+                var browserParentBeforeReply = a.Surface.Parent;
                 await pane.PerformAction(ReaderAction.Reply);
                 Check(originalRequests == 0 && pane.IsReplyVisible && a.ReaderReplyOpen && readerList.SelectedIndex == 0, "reply opens alongside list without leaving reader mode");
-                Check(a.View.Parent != browserParentBeforeReply && a.View.Visibility == Visibility.Visible && !((DockPanel)pane.Children[0]).IsEnabled, "inline reply hosts official browser and protects selection");
+                await PresentationChecks.Ready(a);
+                Check(a.Surface.Parent != browserParentBeforeReply && a.View.Visibility == Visibility.Visible && !((DockPanel)pane.Children[0]).IsEnabled, "inline reply hosts official browser and protects selection");
                 await a.View.CoreWebView2.ExecuteScriptAsync("document.body.insertAdjacentHTML('beforeend','<textarea id=reply-draft>Unsent synthetic draft</textarea>')");
                 var beforeReplySearch = readerNavigations;
                 await pane.SearchSaved("another message");
                 Check(readerNavigations == beforeReplySearch && readerList.SelectedIndex == 0, "search cannot navigate away from an active reply");
                 pane.Close(); host.Children.Remove(pane);
-                Check(a.View.Parent == browserParentBeforeReply && a.ReaderReplyOpen, "closing reader returns browser to its owner without dropping reply state");
+                Check(a.Surface.Parent == browserParentBeforeReply && a.ReaderReplyOpen, "closing reader returns browser to its owner without dropping reply state");
                 pane = new ReaderPane(a, () => originalRequests++); host.Children.Add(pane); await pane.Start();
                 readerList = ((DockPanel)pane.Children[0]).Children.OfType<ListBox>().Single();
                 readerBody = (StackPanel)((ScrollViewer)((DockPanel)pane.Children[1]).Children[1]).Content;
                 Check(pane.IsReplyVisible && readerNavigations == beforeReplySearch && await a.View.CoreWebView2.ExecuteScriptAsync("document.querySelector('#reply-draft').value") == "\"Unsent synthetic draft\"", "reopening reader restores existing reply DOM without navigation");
                 await pane.ReturnToReading(confirmed: true);
-                Check(!pane.IsReplyVisible && !a.ReaderReplyOpen && a.View.Parent == browserParentBeforeReply && readerList.SelectedIndex == 0 && readerBody.Children.OfType<TextBlock>().Any(t => t.Text.Contains("Safe text")), "return from reply restores native message and browser ownership");
+                Check(!pane.IsReplyVisible && !a.ReaderReplyOpen && a.Surface.Parent == browserParentBeforeReply && readerList.SelectedIndex == 0 && readerBody.Children.OfType<TextBlock>().Any(t => t.Text.Contains("Safe text")), "return from reply restores native message and browser ownership");
                 await pane.PerformAction(ReaderAction.Archive);
                 Check(originalRequests == 0 && readerList.SelectedIndex == 0 && readerBody.Children.OfType<TextBlock>().Any(t => t.Text.Contains("Safe text")), "unavailable action preserves reader and selected content without modal fallback");
                 pane.UpdateLayout();
@@ -712,7 +715,7 @@ internal static class Program
                 a.Cache.Clear();
                 var foregroundSource = a.View.CoreWebView2.Source;
                 var collector = new BrowserSession(store, window, _ => { }, () => false);
-                sessions.Add(collector); host.Children.Add(collector.View); collector.View.Visibility = Visibility.Hidden;
+                sessions.Add(collector); host.Children.Add(collector.Surface); collector.Surface.SetRequestedVisibility(Visibility.Hidden);
                 await collector.Initialize(id, background: true);
                 var collectorReads = new List<string>();
                 collector.View.CoreWebView2.WebResourceRequested += (_, e) =>
@@ -749,7 +752,7 @@ internal static class Program
                 var cacheSettingsBitmap = new RenderTargetBitmap((int)settingsWindow.ActualWidth, (int)settingsWindow.ActualHeight, 96, 96, PixelFormats.Pbgra32); cacheSettingsBitmap.Render((Visual)settingsWindow.Content);
                 var cacheSettingsEncoder = new PngBitmapEncoder(); cacheSettingsEncoder.Frames.Add(BitmapFrame.Create(cacheSettingsBitmap));
                 using (var capture = File.Create(Path.Combine(root, "cache-settings.png"))) cacheSettingsEncoder.Save(capture);
-                settingsWindow.Close(); collector.Dispose(); sessions.Remove(collector); host.Children.Remove(collector.View);
+                settingsWindow.Close(); collector.Dispose(); sessions.Remove(collector); host.Children.Remove(collector.Surface);
                 using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
                 bool stopped = false;
                 try { await a.ReaderData.CacheMailbox(_ => { }, _ => { }, cancelled.Token); } catch (OperationCanceledException) { stopped = true; }
@@ -786,8 +789,9 @@ internal static class Program
                     var activeList = ((DockPanel)((ReaderPane)readerHost.Children[0]).Children[0]).Children.OfType<ListBox>().Single();
                     Check(activeList.Items.Cast<ReaderLetter>().Single().Sender == store.Settings.Profiles[index].Name, "switched reader shows only selected account cache");
                 }
-                var firstView = browserHost.Children.OfType<Microsoft.Web.WebView2.Wpf.WebView2>().First();
-                Check(browserHost.Visibility == Visibility.Hidden && browserHost.Children.OfType<Microsoft.Web.WebView2.Wpf.WebView2>().All(v => !v.IsVisible), "reader keeps source web surfaces invisible across account switches");
+                var surfaces = browserHost.Children.OfType<BrowserPresentation>().ToArray();
+                var firstView = surfaces.First().Children.OfType<Microsoft.Web.WebView2.Wpf.WebView2>().Single();
+                Check(surfaces.Length == 2 && browserHost.Visibility == Visibility.Hidden && surfaces.All(v => !v.IsVisible), "reader keeps source web surfaces invisible across account switches");
 
                 firstView.CoreWebView2.WebResourceRequested += (_, e) =>
                 {

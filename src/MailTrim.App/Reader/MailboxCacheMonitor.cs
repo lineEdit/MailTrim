@@ -49,7 +49,7 @@ public sealed class MailboxCacheMonitor(LocalStore store, Window owner, Grid hos
                 if (nextRun.TryGetValue(profile.Id, out var next) && DateTimeOffset.UtcNow < next) continue;
                 using var collector = new BrowserSession(store, owner, _ => { }, () => false);
                 collector.View.Visibility = Visibility.Hidden; collector.View.IsHitTestVisible = false;
-                host.Children.Add(collector.View);
+                host.Children.Add(collector.Surface);
                 MailboxCacheProgress progress = new(CacheStage.Discovering, 0, 6, 0);
                 try
                 {
@@ -71,7 +71,7 @@ public sealed class MailboxCacheMonitor(LocalStore store, Window owner, Grid hos
                     nextRun[profile.Id] = DateTimeOffset.UtcNow.AddMinutes(2);
                     store.Log("automatic_cache_deferred");
                 }
-                finally { host.Children.Remove(collector.View); }
+                finally { host.Children.Remove(collector.Surface); }
             }
         }
         catch (OperationCanceledException) { }

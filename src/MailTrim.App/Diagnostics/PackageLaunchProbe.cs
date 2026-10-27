@@ -42,7 +42,7 @@ internal static class PackageLaunchProbe
                 };
                 core.NavigationCompleted += (_, navigation) => loaded.TrySetResult(navigation.IsSuccess);
             };
-            window.Content = view; window.Show();
+            window.Content = session.Surface; window.Show();
             await session.Initialize(Guid.NewGuid()).WaitAsync(TimeSpan.FromSeconds(30));
             if (!await loaded.Task.WaitAsync(TimeSpan.FromSeconds(20))) throw new IOException("Fixture navigation failed");
             var text = await view.CoreWebView2.ExecuteScriptAsync("document.getElementById('package-check')?.textContent");
