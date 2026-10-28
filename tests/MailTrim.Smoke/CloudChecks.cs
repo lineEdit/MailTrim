@@ -24,11 +24,32 @@ internal static class CloudChecks
         await session.EnsureCloud(surface => browserHost.Children.Add(surface));
         Fixture(session.CloudView!);
         var mailPane = (ReaderPane)readerHost.Children[0];
+        // Entry refresh and source startup are asynchronous. Keep this navigation test
+        // on deterministic synthetic Mail data before measuring any tab-side effects.
+        await Until(() => !mailPane.IsLoading);
         await mailPane.SearchSaved("Cached subject");
+        check(Descendants(mailPane).OfType<TextBox>().Single().Text == "Cached subject",
+            "service-tab fixture enters cache search before selecting its synthetic message");
         await session.ReaderData.WaitForIdle(CancellationToken.None);
+        session.View.CoreWebView2.Stop();
+        session.View.CoreWebView2.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
+        session.View.CoreWebView2.WebResourceRequested += (_, e) =>
+        {
+            var url = new Uri(e.Request.Uri);
+            if (url.Host != "e.mail.ru" || url.AbsolutePath is not ("/__mailtrim_service_tabs" or "/__mailtrim_reader" or "/inbox/")) return;
+            var html = "<html><body><div class='letter-body__body-content'>Cached text</div><a class='js-letter-list-item' data-read='true' href='/__mailtrim_reader'><span class='llc__subject'>Cached subject</span></a></body></html>";
+            e.Response = session.View.CoreWebView2.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(html)), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
+        };
+        await Navigate(session.View, "https://e.mail.ru/__mailtrim_service_tabs");
         var mailList = ((DockPanel)mailPane.Children[0]).Children.OfType<ListBox>().Single();
-        mailList.SelectedIndex = 0;
-        var selectedMail = (ReaderLetter)mailList.SelectedItem;
+        mailList.SelectedIndex = -1; mailList.SelectedIndex = 0;
+        await mailPane.BackgroundMessageRefresh.WaitAsync(TimeSpan.FromSeconds(15));
+        await session.ReaderData.WaitForIdle(CancellationToken.None);
+        await shell.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+        var selectedMailUrl = ((ReaderLetter)mailList.SelectedItem).Url;
+        check(Descendants(mailPane).OfType<TextBlock>().Any(x => x.Text == "Cached text"),
+            "service-tab fixture has rendered and drained the selected synthetic message");
+        var ownedWindows = shell.OwnedWindows.Count;
         var mailNavigations = 0;
         void MailNavigated(object? sender, CoreWebView2NavigationStartingEventArgs e) => mailNavigations++;
         session.View.CoreWebView2.NavigationStarting += MailNavigated;
@@ -37,7 +58,7 @@ internal static class CloudChecks
             check(mailHeader.IsVisible && mailHeader.MailTab.IsChecked == true && mailHeader.CloudTab.IsChecked != true && fallback.Visibility == Visibility.Collapsed,
                 "native Mail exposes the familiar selected Mail tab without a duplicate Cloud toolbar command");
             Click(mailHeader.MailTab); await Idle();
-            check(mailNavigations == 0 && ReferenceEquals(mailPane, readerHost.Children[0]) && ReferenceEquals(selectedMail, mailList.SelectedItem),
+            check(mailNavigations == 0 && ReferenceEquals(mailPane, readerHost.Children[0]) && (mailList.SelectedItem as ReaderLetter)?.Url == selectedMailUrl,
                 "clicking the active Mail tab does not reload or replace the selected native message");
             Click(mailHeader.CloudTab); await Idle();
             var nativeCloud = cloudHost.Children.OfType<CloudPane>().Single(x => x.Visibility == Visibility.Visible);
@@ -61,10 +82,17 @@ internal static class CloudChecks
                 check(cloudNavigations == 0 && nativeCloud.Listing!.FolderUrl == "https://cloud.mail.ru/home/Saved/" && nativeCloud.SelectedItem?.Url == selectedCloud,
                     "clicking the active Cloud tab preserves its folder and selection without navigating the source");
                 Click(cloudHeader.MailTab); await Idle();
-                check(!session.CloudOpen && readerHost.Visibility == Visibility.Visible && cloudHost.Visibility == Visibility.Collapsed
-                    && ReferenceEquals(mailPane, readerHost.Children[0]) && ReferenceEquals(selectedMail, mailList.SelectedItem)
-                    && mailHeader.IsVisible && mailHeader.MailTab.IsChecked == true && mailNavigations == 0 && shell.OwnedWindows.Count == 0,
-                    "Cloud's Mail tab restores the selected native message without opening the website or another window");
+                check(!session.CloudOpen && readerHost.Visibility == Visibility.Visible && cloudHost.Visibility == Visibility.Collapsed,
+                    "Cloud's Mail tab restores the native Mail workspace");
+                check(ReferenceEquals(mailPane, readerHost.Children[0]) && (mailList.SelectedItem as ReaderLetter)?.Url == selectedMailUrl
+                    && Descendants(mailPane).OfType<TextBlock>().Any(x => x.Text == "Cached text"),
+                    "returning from Cloud retains the same reader, selected message URL and rendered body");
+                check(mailHeader.IsVisible && mailHeader.MailTab.IsChecked == true,
+                    "returning from Cloud shows the selected Mail service tab");
+                check(browserHost.Visibility == Visibility.Hidden && session.Surface.RequestedVisibility != Visibility.Visible && mailNavigations == 0,
+                    $"returning from Cloud keeps the Mail website hidden without navigation (observed: {mailNavigations})");
+                check(shell.OwnedWindows.Count == ownedWindows,
+                    $"returning from Cloud creates no extra window (before: {ownedWindows}, after: {shell.OwnedWindows.Count})");
                 Click(mailHeader.CloudTab); await Idle(); await nativeCloud.BackgroundLoad;
                 check(ReferenceEquals(nativeCloud, cloudHost.Children.OfType<CloudPane>().Single(x => x.Visibility == Visibility.Visible))
                     && nativeCloud.Listing!.FolderUrl == "https://cloud.mail.ru/home/Saved/" && nativeCloud.SelectedItem?.Url == selectedCloud && cloudNavigations == 0,
