@@ -17,49 +17,108 @@ internal static class CloudChecks
         var readerHost = (Grid)shell.FindName("ReaderHost");
         var cloudHost = (Grid)shell.FindName("CloudHost");
         var profiles = (ListBox)shell.FindName("Profiles");
-        var button = (Button)shell.FindName("CloudButton");
+        var fallback = (Button)shell.FindName("CloudButton");
+        var mailHeader = (ServiceHeader)shell.FindName("MailServiceHeader");
         var sessions = (Dictionary<Guid, BrowserSession>)typeof(MainWindow).GetField("sessions", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(shell)!;
         var session = sessions[((AccountProfile)profiles.SelectedItem).Id];
         await session.EnsureCloud(surface => browserHost.Children.Add(surface));
         Fixture(session.CloudView!);
-        var pane = readerHost.Children[0];
-        button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await Idle();
-        var nativeCloud = cloudHost.Children.OfType<CloudPane>().Single(x => x.Visibility == Visibility.Visible);
-        await nativeCloud.BackgroundLoad;
-        check(browserHost.Visibility == Visibility.Hidden && cloudHost.Visibility == Visibility.Visible && readerHost.Visibility == Visibility.Collapsed
-            && session.CloudSurface!.RequestedVisibility != Visibility.Visible && nativeCloud.Items.Any(x => x.Name == "Cloud test.txt")
-            && ReferenceEquals(pane, readerHost.Children[0]) && button.Content.ToString() == "Почта",
-            "Cloud toolbar shows its own file list over a hidden source without destroying the same native mail reader");
-        var original = Buttons(nativeCloud).Single(x => x.Content?.ToString() == "Оригинал ↗");
-        original.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await Idle();
-        check(session.CloudOriginal && browserHost.Visibility == Visibility.Visible && cloudHost.Visibility == Visibility.Collapsed
-            && session.CloudSurface!.Visibility == Visibility.Visible && button.Content.ToString() == "К списку",
-            "native Cloud opens the website only through its explicit original command");
-        await Loaded(session.CloudView!, "document.getElementById('mail-link') !== null");
-        var popupCount = shell.OwnedWindows.Count;
-        await session.CloudView!.CoreWebView2.ExecuteScriptAsync("document.getElementById('mail-link').click()");
-        await Until(() => shell.IsEnabled && !session.CloudOpen && readerHost.Visibility == Visibility.Visible);
-        check(ReferenceEquals(pane, readerHost.Children[0]) && cloudHost.Visibility == Visibility.Collapsed && shell.OwnedWindows.Count == popupCount,
-            "Cloud site's Mail link with a new-window target returns to the same native reader without a separate window");
-        button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await Idle();
-        profiles.SelectedIndex = 1; await Idle();
-        check(readerHost.Visibility == Visibility.Visible && button.Content.ToString() == "Облако", "another account retains its Mail reading mode instead of inheriting Cloud");
-        profiles.SelectedIndex = 0; await Idle();
-        check(readerHost.Visibility == Visibility.Collapsed && cloudHost.Visibility == Visibility.Visible && browserHost.Visibility == Visibility.Hidden
-            && session.CloudSurface!.RequestedVisibility != Visibility.Visible && button.Content.ToString() == "Почта",
-            "returning to an account restores its native Cloud workspace without revealing the site");
-        button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await Idle();
-        check(readerHost.Visibility == Visibility.Visible && ((Button)shell.FindName("ReaderButton")).Content.ToString() == "Оригинал", "reading mode also returns after switching accounts while Cloud was open");
+        var mailPane = (ReaderPane)readerHost.Children[0];
+        await mailPane.SearchSaved("Cached subject");
+        await session.ReaderData.WaitForIdle(CancellationToken.None);
+        var mailList = ((DockPanel)mailPane.Children[0]).Children.OfType<ListBox>().Single();
+        mailList.SelectedIndex = 0;
+        var selectedMail = (ReaderLetter)mailList.SelectedItem;
+        var mailNavigations = 0;
+        void MailNavigated(object? sender, CoreWebView2NavigationStartingEventArgs e) => mailNavigations++;
+        session.View.CoreWebView2.NavigationStarting += MailNavigated;
+        try
+        {
+            check(mailHeader.IsVisible && mailHeader.MailTab.IsChecked == true && mailHeader.CloudTab.IsChecked != true && fallback.Visibility == Visibility.Collapsed,
+                "native Mail exposes the familiar selected Mail tab without a duplicate Cloud toolbar command");
+            Click(mailHeader.MailTab); await Idle();
+            check(mailNavigations == 0 && ReferenceEquals(mailPane, readerHost.Children[0]) && ReferenceEquals(selectedMail, mailList.SelectedItem),
+                "clicking the active Mail tab does not reload or replace the selected native message");
+            Click(mailHeader.CloudTab); await Idle();
+            var nativeCloud = cloudHost.Children.OfType<CloudPane>().Single(x => x.Visibility == Visibility.Visible);
+            await nativeCloud.BackgroundLoad;
+            var cloudHeader = Descendants(nativeCloud).OfType<ServiceHeader>().Single();
+            check(browserHost.Visibility == Visibility.Hidden && cloudHost.Visibility == Visibility.Visible && readerHost.Visibility == Visibility.Collapsed
+                && session.CloudSurface!.RequestedVisibility != Visibility.Visible && nativeCloud.Items.Any(x => x.Name == "Cloud test.txt")
+                && ReferenceEquals(mailPane, readerHost.Children[0]) && cloudHeader.CloudTab.IsChecked == true && cloudHeader.MailTab.IsChecked != true
+                && mailHeader.Visibility == Visibility.Collapsed && fallback.Visibility == Visibility.Collapsed,
+                "the Cloud service tab shows its own file list over a hidden source and preserves the same Mail reader");
+            await nativeCloud.OpenFolder("https://cloud.mail.ru/home/Saved/");
+            var cloudList = Descendants(nativeCloud).OfType<ListBox>().Single(x => x.Name == "CloudItems");
+            cloudList.SelectedIndex = 0;
+            var selectedCloud = nativeCloud.SelectedItem!.Url;
+            var cloudNavigations = 0;
+            void CloudNavigated(object? sender, CoreWebView2NavigationStartingEventArgs e) => cloudNavigations++;
+            session.CloudView!.CoreWebView2.NavigationStarting += CloudNavigated;
+            try
+            {
+                Click(cloudHeader.CloudTab); await Idle();
+                check(cloudNavigations == 0 && nativeCloud.Listing!.FolderUrl == "https://cloud.mail.ru/home/Saved/" && nativeCloud.SelectedItem?.Url == selectedCloud,
+                    "clicking the active Cloud tab preserves its folder and selection without navigating the source");
+                Click(cloudHeader.MailTab); await Idle();
+                check(!session.CloudOpen && readerHost.Visibility == Visibility.Visible && cloudHost.Visibility == Visibility.Collapsed
+                    && ReferenceEquals(mailPane, readerHost.Children[0]) && ReferenceEquals(selectedMail, mailList.SelectedItem)
+                    && mailHeader.IsVisible && mailHeader.MailTab.IsChecked == true && mailNavigations == 0 && shell.OwnedWindows.Count == 0,
+                    "Cloud's Mail tab restores the selected native message without opening the website or another window");
+                Click(mailHeader.CloudTab); await Idle(); await nativeCloud.BackgroundLoad;
+                check(ReferenceEquals(nativeCloud, cloudHost.Children.OfType<CloudPane>().Single(x => x.Visibility == Visibility.Visible))
+                    && nativeCloud.Listing!.FolderUrl == "https://cloud.mail.ru/home/Saved/" && nativeCloud.SelectedItem?.Url == selectedCloud && cloudNavigations == 0,
+                    "returning through the Cloud tab keeps the same open folder and selected file without reloading");
+            }
+            finally { session.CloudView!.CoreWebView2.NavigationStarting -= CloudNavigated; }
+            var original = Descendants(nativeCloud).OfType<Button>().Single(x => x.Content?.ToString() == "Оригинал ↗");
+            Click(original); await Idle();
+            check(session.CloudOriginal && browserHost.Visibility == Visibility.Visible && cloudHost.Visibility == Visibility.Collapsed
+                && session.CloudSurface!.Visibility == Visibility.Visible && fallback.Content.ToString() == "К списку"
+                && fallback.Visibility == Visibility.Visible && mailHeader.Visibility == Visibility.Collapsed,
+                "native Cloud still opens the website only through its explicit original command without duplicating the site header");
+            await Loaded(session.CloudView!, "document.getElementById('mail-link') !== null");
+            var popupCount = shell.OwnedWindows.Count;
+            await session.CloudView!.CoreWebView2.ExecuteScriptAsync("document.getElementById('mail-link').click()");
+            await Until(() => shell.IsEnabled && !session.CloudOpen && readerHost.Visibility == Visibility.Visible);
+            check(ReferenceEquals(mailPane, readerHost.Children[0]) && cloudHost.Visibility == Visibility.Collapsed && shell.OwnedWindows.Count == popupCount
+                && mailHeader.IsVisible && mailHeader.MailTab.IsChecked == true,
+                "the original Cloud site's new-window Mail link returns to the native Mail tab without a separate window");
+            Click(mailHeader.CloudTab); await Idle(); await nativeCloud.BackgroundLoad;
+            profiles.SelectedIndex = 1; await Idle();
+            check(readerHost.Visibility == Visibility.Visible && mailHeader.IsVisible && mailHeader.MailTab.IsChecked == true && fallback.Visibility == Visibility.Collapsed,
+                "another account retains its selected Mail service tab instead of inheriting Cloud");
+            profiles.SelectedIndex = 0; await Idle(); await nativeCloud.BackgroundLoad;
+            check(readerHost.Visibility == Visibility.Collapsed && cloudHost.Visibility == Visibility.Visible && browserHost.Visibility == Visibility.Hidden
+                && session.CloudSurface!.RequestedVisibility != Visibility.Visible && cloudHeader.CloudTab.IsChecked == true
+                && nativeCloud.Listing!.FolderUrl == "https://cloud.mail.ru/home/Saved/" && nativeCloud.SelectedItem?.Url == selectedCloud
+                && mailHeader.Visibility == Visibility.Collapsed && fallback.Visibility == Visibility.Collapsed,
+                "returning to an account restores its Cloud tab, folder and file selection without revealing the site");
+            Click(cloudHeader.MailTab); await Idle();
+            check(readerHost.Visibility == Visibility.Visible && mailHeader.IsVisible && mailHeader.MailTab.IsChecked == true
+                && ((Button)shell.FindName("ReaderButton")).Content.ToString() == "Оригинал",
+                "the Mail service tab restores reading mode after switching accounts while Cloud was open");
+        }
+        finally { session.View.CoreWebView2.NavigationStarting -= MailNavigated; }
         async Task Idle()
         {
             for (var i = 0; i < 400; i++) { await Task.Delay(25); if (shell.IsEnabled) return; }
             throw new TimeoutException("cloud_shell_idle");
         }
-        static IEnumerable<Button> Buttons(DependencyObject root)
+        static void Click(System.Windows.Controls.Primitives.ButtonBase button)
         {
-            if (root is Button ownButton) yield return ownButton;
+            if (button is RadioButton tab)
+            {
+                var peer = new System.Windows.Automation.Peers.RadioButtonAutomationPeer(tab);
+                ((System.Windows.Automation.Provider.ISelectionItemProvider)peer).Select();
+            }
+            else button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        }
+        static IEnumerable<DependencyObject> Descendants(DependencyObject root)
+        {
+            yield return root;
             foreach (var child in LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>())
-                foreach (var nestedButton in Buttons(child)) yield return nestedButton;
+                foreach (var descendant in Descendants(child)) yield return descendant;
         }
     }
     public static async Task Run(LocalStore store, Grid host, Window window, Action<bool, string> check)

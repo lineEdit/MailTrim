@@ -81,9 +81,18 @@ public partial class MainWindow : Window
         CloudHost.Visibility = nativeCloud ? Visibility.Visible : Visibility.Collapsed;
         foreach (var (id, pane) in clouds) pane.SetActive(nativeCloud && Current?.ProfileId == id);
         ReaderHost.Visibility = !cloud && reader is not null ? Visibility.Visible : Visibility.Collapsed;
+        UpdateServiceNavigation();
         ReaderButton.Visibility = cloud ? Visibility.Collapsed : Visibility.Visible;
         CloudButton.Content = cloud ? Current?.CloudOriginal == true ? "К списку" : "Почта" : "Облако";
         CloudButton.ToolTip = cloud ? "Вернуться к открытой почте" : "Облако Mail выбранного ящика";
+    }
+    private void UpdateServiceNavigation()
+    {
+        var mail = Current is not null && CurrentGmail is null;
+        MailServiceHeader.Visibility = mail && Current?.CloudOpen != true && reader is not null ? Visibility.Visible : Visibility.Collapsed;
+        // The original website already supplies its own service row. Keep the toolbar
+        // fallback there (also useful on sign-in pages), but avoid a second native switch.
+        CloudButton.Visibility = mail && (Current?.CloudOpen == true ? Current.CloudOriginal : reader is null) ? Visibility.Visible : Visibility.Collapsed;
     }
     private async Task OpenCloud(string url = "https://cloud.mail.ru/")
     {
@@ -95,6 +104,7 @@ public partial class MainWindow : Window
                 () => { if (ReferenceEquals(Current, current)) _ = Run(() => ShowCloudOriginal(current)); },
                 () => { if (ReferenceEquals(Current, current)) _ = Run(() => current.ShowCloudSignIn(CurrentCloud?.Listing?.LoginUrl, () => { if (clouds.TryGetValue(current.ProfileId, out var p)) _ = p.Refresh(); })); });
             clouds.Add(current.ProfileId, pane); CloudHost.Children.Add(pane);
+            pane.MailRequested += () => { if (ReferenceEquals(Current, current) && current.CloudOpen) _ = Run(ReturnToMail); };
         }
         current.SetCloudOriginal(false); current.SetCloudOpen(true); UpdateWorkspace();
         _ = pane.Start(url == "https://cloud.mail.ru/" ? null : url);
@@ -133,6 +143,7 @@ public partial class MainWindow : Window
         this.store = store;
         this.confirmReplyExit = confirmReplyExit ?? (message => MessageBox.Show(this, message, "Открыт ответ", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes);
         InitializeComponent(); ApplyTheme();
+        MailServiceHeader.CloudRequested += () => { if (Current is { CloudOpen: false }) _ = Run(() => OpenCloud()); };
         VersionLabel.Text = "MailTrim " + typeof(MainWindow).Assembly.GetName().Version!.ToString(3);
         Loaded += async (_, _) =>
         {
@@ -209,6 +220,7 @@ public partial class MainWindow : Window
         BrowserHost.Visibility = keepReading ? Visibility.Hidden : Visibility.Visible;
         Current?.SetReadingOnly(keepReading);
         ReaderButton.Content = "Только важное";
+        UpdateServiceNavigation();
         if (Current?.CloudOpen == true) UpdateWorkspace();
     }
     private async void Reader_Click(object sender, RoutedEventArgs e)
@@ -223,6 +235,7 @@ public partial class MainWindow : Window
         reader = new ReaderPane(Current, CloseReader);
         ReaderHost.Children.Add(reader); BrowserHost.Visibility = Visibility.Hidden;
         ReaderHost.Visibility = Visibility.Visible; ReaderButton.Content = "Оригинал";
+        UpdateServiceNavigation();
         await reader.Start();
     }
     private async Task Run(Func<Task> action, bool stopCache = false)
@@ -260,6 +273,7 @@ public partial class MainWindow : Window
         foreach (var pane in gmail.Values) pane.SetActive(false);
         foreach (var pane in clouds.Values) pane.SetActive(false);
         CloudHost.Visibility = Visibility.Collapsed;
+        MailServiceHeader.Visibility = Visibility.Collapsed;
         GmailHost.Visibility = Visibility.Collapsed;
         CloudButton.Visibility = ReaderButton.Visibility = PauseButton.Visibility = BackButton.Visibility = Visibility.Visible;
         foreach (var s in sessions.Values) s.SetActive(false);
@@ -403,6 +417,7 @@ public partial class MainWindow : Window
         var colors = dark ? new[] { "#151C29", "#1F293A", "#EDF2FC", "#A7B4CC", "#344158" } : new[] { "#F5F7FB", "#FFFFFF", "#17233B", "#5B6980", "#DCE3EF" };
         var keys = new[] { "Surface", "Panel", "Ink", "Muted", "Line" };
         for (int i = 0; i < keys.Length; i++) Application.Current.Resources[keys[i]] = new SolidColorBrush((Color)ColorConverter.ConvertFromString(colors[i]));
+        Application.Current.Resources["ServiceSelected"] = new SolidColorBrush((Color)ColorConverter.ConvertFromString(dark ? "#163C66" : "#DFECFC"));
     }
 }
 

@@ -39,6 +39,7 @@ public sealed class CloudPane : Grid, IDisposable
     public bool IsLoading { get; private set; }
     public Task BackgroundLoad { get; private set; } = Task.CompletedTask;
     public CloudItem? SelectedItem => files.SelectedItem as CloudItem;
+    public event Action? MailRequested;
 
     public CloudPane(BrowserSession session, Action showOriginal, Action showLogin)
     {
@@ -49,15 +50,11 @@ public sealed class CloudPane : Grid, IDisposable
         RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(180) });
         ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        var header = new DockPanel { Margin = new Thickness(14, 0, 14, 0), LastChildFill = false }; SetColumnSpan(header, 2); Children.Add(header);
-        var brand = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        var at = new TextBlock { Text = "@", FontSize = 32, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 5, 0) }; at.SetResourceReference(TextBlock.ForegroundProperty, "Accent");
-        brand.Children.Add(at); var brandName = new TextBlock { Text = "облако", FontSize = 24, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
-        brandName.SetResourceReference(TextBlock.ForegroundProperty, "Ink"); brand.Children.Add(brandName); DockPanel.SetDock(brand, Dock.Left); header.Children.Add(brand);
         search.Width = 300; search.VerticalAlignment = VerticalAlignment.Center; search.ToolTip = "Поиск по именам в текущем списке";
         search.Tag = "Поиск в папке"; search.SetResourceReference(StyleProperty, "NativeSearchBox");
         System.Windows.Automation.AutomationProperties.SetName(search, "Поиск файлов в текущей папке");
-        DockPanel.SetDock(search, Dock.Right); header.Children.Add(search);
+        var header = new ServiceHeader(true, search); header.MailRequested += () => MailRequested?.Invoke();
+        SetColumnSpan(header, 2); Children.Add(header);
         var navigation = new DockPanel(); navigation.SetResourceReference(BackgroundProperty, "Surface"); SetRow(navigation, 1);
         var navHeader = new TextBlock { Text = "РАЗДЕЛЫ", Margin = new Thickness(12, 14, 8, 12), FontWeight = FontWeights.SemiBold };
         navHeader.SetResourceReference(StyleProperty, "NativeMetadata"); DockPanel.SetDock(navHeader, Dock.Top); navigation.Children.Add(navHeader);
