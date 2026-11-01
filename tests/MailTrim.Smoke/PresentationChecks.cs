@@ -51,6 +51,34 @@ internal static class PresentationChecks
             await Task.Delay(100);
             check(await core.ExecuteScriptAsync("document.getElementById('quote').getBoundingClientRect().height>0 && document.getElementById('working').getBoundingClientRect().height>0")=="true",
                 "message content and working dialogs remain visible in live mode");
+            await core.ExecuteScriptAsync("""
+                window.petActionClicks=0; window.petCloseClicks=0; window.petLeaks=0;
+                window.insertPetPromo=outsideClose=>{
+                  document.getElementById('pet-root')?.remove();
+                  const close=`<button id="pet-close" aria-label="Закрыть" style="position:absolute;${outsideClose?'left:600px;top:58px':'right:8px;top:8px'};width:32px;height:32px" onclick="window.petCloseClicks++">×</button>`;
+                  const copy=`<h2>1000 ₽ на вкусняшки питомцу</h2><p>А ещё 1 ТБ памяти по специальной цене — нужно только заполнить анкету, и всё!</p><a href="https://example.test/raffle" style="display:inline-block;cursor:pointer" onclick="event.preventDefault();window.petActionClicks++">К розыгрышу</a><small style="display:block">Реклама ООО ВК. Акция 15.10.26 — 26.11.26. Условия: vk.cc/d2TCyA. erid 2VtzqxWGbw5. 0+</small>`;
+                  document.body.insertAdjacentHTML('beforeend',`<div id="pet-root" style="position:fixed;inset:0"><div id="pet-shade" style="position:absolute;inset:0;background:#8888"></div><section id="pet-frame" style="position:absolute;left:100px;top:50px;width:540px;height:500px;background:white;border-radius:20px"><div id="pet-art" role="img" aria-label="Synthetic pet artwork" style="height:210px;background:linear-gradient(#acf,#cfc)"></div><div id="pet-copy" style="padding:12px">${copy}</div>${outsideClose?'':close}</section>${outsideClose?close:''}</div>`);
+                  requestAnimationFrame(()=>{if(document.getElementById('pet-frame').getBoundingClientRect().height>0 || document.getElementById('pet-shade').getBoundingClientRect().height>0)window.petLeaks++});
+                };
+                document.body.insertAdjacentHTML('beforeend',`<div id="pet-quote" class="letter-body" style="height:160px"><h2>1000 ₽ на вкусняшки питомцу</h2><p>Заполнить анкету. erid 2VtzqxWGbw5. Реклама.</p><button>К розыгрышу</button></div><div id="pet-questionnaire" role="dialog" style="position:fixed;left:660px;top:300px;width:250px;height:200px;background:white"><form><h2>Анкета питомца</h2><p>1000 ₽ на вкусняшки питомцу. Реклама. erid 2VtzqxWGbw5.</p><input aria-label="Имя питомца"><button type="button">К розыгрышу</button></form></div>`);
+                window.insertPetPromo(false);
+                """);
+            await Task.Delay(100);
+            check(await core.ExecuteScriptAsync("petLeaks===0 && petActionClicks===0 && document.getElementById('pet-root').getBoundingClientRect().height===0 && document.getElementById('pet-art').getBoundingClientRect().height===0 && document.getElementById('pet-shade').getBoundingClientRect().height===0")=="true",
+                "Mail Space pet raffle with bare erid and its artwork, close and shade are hidden before the first frame without entering the raffle");
+            check(await core.ExecuteScriptAsync("document.getElementById('pet-quote').getBoundingClientRect().height>0 && document.getElementById('pet-questionnaire').getBoundingClientRect().height>0 && document.querySelector('#pet-questionnaire input').getBoundingClientRect().height>0")=="true",
+                "pet raffle filtering preserves quoted mail and a working questionnaire with the same promotional words");
+            await core.ExecuteScriptAsync("window.insertPetPromo(true)");
+            await Task.Delay(100);
+            check(await core.ExecuteScriptAsync("petLeaks===0 && petActionClicks===0 && document.getElementById('pet-root').getBoundingClientRect().height===0 && document.getElementById('pet-close').getBoundingClientRect().height===0")=="true",
+                "reinserted pet raffle with a separate close control leaves no visible card or shaded shell");
+            await core.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, false, false));
+            check(await core.ExecuteScriptAsync("document.getElementById('pet-frame').getBoundingClientRect().height>0 && document.getElementById('pet-shade').getBoundingClientRect().height>0 && petActionClicks===0")=="true",
+                "pausing filters restores the complete pet raffle and its shade without activating its CTA");
+            await core.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, true, false));
+            await Task.Delay(100);
+            check(await core.ExecuteScriptAsync("document.getElementById('pet-root').getBoundingClientRect().height===0 && petActionClicks===0 && document.getElementById('pet-quote').getBoundingClientRect().height>0 && document.getElementById('pet-questionnaire').getBoundingClientRect().height>0")=="true",
+                "resuming filters hides the pet raffle again while retaining mail and working forms");
             await Navigate("https://auth.mail.ru/login/render-test"); await Ready(session);
             check(!core.Settings.IsPasswordAutosaveEnabled && !core.Settings.IsWebMessageEnabled,"official authentication retains disabled password storage and host messaging");
             paused=true;await session.ApplySettings();await Navigate("https://e.mail.ru/inbox/render-first");

@@ -101,6 +101,8 @@ public static class CosmeticScript
           const promos = new Set();
           const promoIslands = new Map();
           const storeTitle = /^Актуальная\s*версия\s*Почты\s*в\s*RuStore$/iu;
+          // Mail campaigns use both "erid: TOKEN" and "erid TOKEN" disclosures.
+          const promoDisclosure = /\berid(?:\s*[:=]\s*|\s+)[a-z0-9]{5,}\b/iu;
           const promoText = node => (node.textContent || '').replace(/[\u200b-\u200d\ufeff]/g, '').trim();
           const closeLabel = text => /^(?:закрыть|close|×|✕|x)$/iu.test(text.trim());
           const overlayProtected = protectedContent + ',.thread,.letter-list__react,.llct,.letter-list,.js-letter-list-item,[role="toolbar"],[role="alert"],form,nav';
@@ -109,9 +111,9 @@ public static class CosmeticScript
             if(text.length>5000)return false;
             if([...node.querySelectorAll('h1,h2,h3,div,span')].some(e=>storeTitle.test(promoText(e)))
                 && /Установите\s*или\s*обновите\s*приложение/iu.test(text) && /Android/iu.test(text))return true;
-            if(!/erid\s*[:=]\s*[a-z0-9]/iu.test(text) || !/акци[яиюй]|розыгр|разыгр|приз|игр[ауы]|реклам/iu.test(text))return false;
+            if(!promoDisclosure.test(text) || !/акци[яиюй]|розыгр|разыгр|приз|игр[ауы]|реклам/iu.test(text))return false;
             return [...node.querySelectorAll('button,a,[role="button"],div,span')].some(e=>
-              /^(?:Играть|Участвовать|Узнать больше|Получить приз|Попробовать|Перейти|Купить)$/iu.test(promoText(e))
+              /^(?:Играть|Участвовать(?:\s+в\s+розыгрыше)?|Принять\s+участие|К\s+розыгрышу|Узнать больше|Получить приз|Попробовать|Перейти|Купить)$/iu.test(promoText(e))
               && (e.matches('button,a,[role="button"]') || e.hasAttribute('onclick') || getComputedStyle(e).cursor==='pointer'));
           };
           // Once positively identified, an empty shell is still the same promo. Release
@@ -349,7 +351,7 @@ public static class CosmeticScript
                 || !promoText(control) && !!control.querySelector('svg') && !control.matches('a'));
             };
             for (const heading of document.querySelectorAll('h1,h2,h3,div,span')) {
-              if (heading.closest(protectedContent) || !(storeTitle.test(promoText(heading)) || /erid\s*[:=]/iu.test(promoText(heading)))) continue;
+              if (heading.closest(protectedContent) || !(storeTitle.test(promoText(heading)) || promoDisclosure.test(promoText(heading)))) continue;
               for (let panel = heading, depth = 0; panel && depth < 12; panel = panel.parentElement, depth++) {
                 if (panel.matches('body,main,#app-canvas,[role="main"]') || panel.querySelector(overlayProtected + ',[role="dialog"]')) break;
                 const text = promoText(panel).replace(/\s+/g, ' ');
