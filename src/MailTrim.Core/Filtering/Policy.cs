@@ -106,6 +106,11 @@ public static class CosmeticScript
           const promoText = node => (node.textContent || '').replace(/[\u200b-\u200d\ufeff]/g, '').trim();
           const closeLabel = text => /^(?:закрыть|close|×|✕|x)$/iu.test(text.trim());
           const overlayProtected = protectedContent + ',.thread,.letter-list__react,.llct,.letter-list,.js-letter-list-item,[role="toolbar"],[role="alert"],form,nav';
+          // A dedicated Mail campaign shell documented by RU AdList. This fallback
+          // survives new artwork/copy without treating every VKUI dialog as advertising.
+          const moduleProtected = overlayProtected + ',iframe,[role="document"],.viewer,.preview';
+          const moduleProtectedArea = moduleProtected.split(',').flatMap(s => [s.trim(), s.trim() + ' *']).join(',');
+          const promotionModuleShell = `.vkuiPopoutRoot:has(a[href^="https://vk.cc/"]):not(${moduleProtectedArea}):not(:has(${moduleProtected}))`;
           const isKnownPromo = node => {
             const text=promoText(node).replace(/\s+/g,' ');
             if(text.length>5000)return false;
@@ -403,6 +408,7 @@ public static class CosmeticScript
               + (labeledAds ? '\n[data-mailtrim-top-ad="true"] { display: none !important; }\n' + topCSS : '')
               + (labeledAds ? `\n.js-banner-wrapper-container:not(${protectedSlot}):not(:has(${protectedContent})) { display: none !important; }` : '')
               + (compactLayout ? '\n[data-mailtrim-promo="true"] { display: none !important; }' : '')
+              + (compactLayout ? '\n' + promotionModuleShell + ' { display: none !important; }' : '')
               + (compactLayout ? '\n[data-mailtrim-wide="true"] { width: 100% !important; max-width: none !important; margin-inline: 0 !important; box-sizing: border-box !important; }\n[data-mailtrim-fill="true"] { height: 100% !important; }\n[data-mailtrim-viewport="true"] { height: calc(100vh - var(--mailtrim-top)) !important; }\n.thread > .thread__footer:not(.letter-body *, .letter__body *, .compose *, .compose-app *, [contenteditable="true"] *):not(:has(button, input, textarea, [contenteditable="true"])) { display: none !important; }' : '');
           };
           const cleanAds = () => {

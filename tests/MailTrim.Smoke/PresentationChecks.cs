@@ -79,8 +79,42 @@ internal static class PresentationChecks
             await Task.Delay(100);
             check(await core.ExecuteScriptAsync("document.getElementById('pet-root').getBoundingClientRect().height===0 && petActionClicks===0 && document.getElementById('pet-quote').getBoundingClientRect().height>0 && document.getElementById('pet-questionnaire').getBoundingClientRect().height>0")=="true",
                 "resuming filters hides the pet raffle again while retaining mail and working forms");
+            check(await core.ExecuteScriptAsync("document.querySelectorAll('.vkuiPopoutRoot').length===0")=="true",
+                "campaign-module fixture starts before the dedicated popup exists");
+            await core.ExecuteScriptAsync("""
+                window.moduleActionClicks=0; window.moduleLeaks=0; window.moduleImmediatelyHidden=true;
+                window.insertCampaignModule=variant=>{
+                  document.getElementById('campaign-module')?.remove();
+                  const title=variant?'Новый формат привычных вещей':'Знакомьтесь: события рядом';
+                  const action=variant?'Посмотреть историю':'Открыть подборку';
+                  document.body.insertAdjacentHTML('beforeend',`<div id="campaign-module" class="vkuiPopoutRoot" style="position:fixed;inset:0"><div id="module-shade" style="position:absolute;inset:0;background:#8888"></div><section id="module-frame" style="position:absolute;left:220px;top:90px;width:480px;height:400px;background:white"><div id="module-art" role="img" aria-label="Synthetic campaign artwork" style="height:210px;background:linear-gradient(#def,#acd)"></div><h2>${title}</h2><p>Здесь совершенно другой текст без маркировки.</p><a href="https://vk.cc/d2TCyA" onclick="event.preventDefault();window.moduleActionClicks++">${action}</a></section><button id="module-close" aria-label="Закрыть" style="position:absolute;left:660px;top:98px;width:32px;height:32px">×</button></div>`);
+                  const visible=()=>['campaign-module','module-shade','module-frame','module-art','module-close'].some(id=>document.getElementById(id).getBoundingClientRect().height>0);
+                  if(visible())window.moduleImmediatelyHidden=false;
+                  requestAnimationFrame(()=>{if(visible())window.moduleLeaks++});
+                };
+                document.body.insertAdjacentHTML('beforeend',`<div class="letter-body" id="module-quoted-mail" style="height:100px"><div class="vkuiPopoutRoot" id="module-inside-mail" style="height:80px"><a href="https://vk.cc/reference">Ссылка из письма</a></div></div><div class="vkuiPopoutRoot" id="module-containing-mail" style="height:100px"><div class="letter-body" style="height:80px"><a href="https://vk.cc/reference">Текст письма внутри оболочки</a></div></div><div class="vkuiPopoutRoot" id="module-working-form" style="height:120px"><form><label>Имя<input aria-label="Имя"></label><a href="https://vk.cc/reference">Справка к анкете</a><button type="button">Сохранить</button></form></div><div class="vkuiPopoutRoot" id="module-without-link" style="height:80px"><h2>Новый формат привычных вещей</h2><button>Посмотреть историю</button></div><div class="vkuiPopoutRootExample" id="module-class-lookalike" style="height:80px"><a href="https://vk.cc/reference">Обычное содержимое</a></div>`);
+                window.insertCampaignModule(false);
+                """);
+            await Task.Delay(100);
+            check(await core.ExecuteScriptAsync("moduleImmediatelyHidden && moduleLeaks===0 && moduleActionClicks===0")=="true",
+                "dedicated Mail campaign module and full shade stay hidden immediately on late insertion without relying on title, CTA or erid");
+            check(await core.ExecuteScriptAsync("['module-quoted-mail','module-inside-mail','module-containing-mail','module-working-form','module-without-link','module-class-lookalike'].every(id=>document.getElementById(id).getBoundingClientRect().height>0) && document.querySelector('#module-working-form input').getBoundingClientRect().height>0")=="true",
+                "campaign-module rule preserves quoted mail, nested message content, working forms, unrelated roots and similar class names");
+            await core.ExecuteScriptAsync("window.insertCampaignModule(true)");
+            await Task.Delay(100);
+            check(await core.ExecuteScriptAsync("moduleImmediatelyHidden && moduleLeaks===0 && moduleActionClicks===0 && document.getElementById('module-close').getBoundingClientRect().height===0")=="true",
+                "campaign-module replacement with completely different text cannot paint its artwork, close control or backdrop");
+            await core.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, false, false));
+            check(await core.ExecuteScriptAsync("document.getElementById('module-frame').getBoundingClientRect().height>0 && document.getElementById('module-shade').getBoundingClientRect().height>0 && moduleActionClicks===0")=="true",
+                "pausing filters restores the dedicated campaign module without activating a link");
+            await core.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, true, false));
+            check(await core.ExecuteScriptAsync("document.getElementById('campaign-module').getBoundingClientRect().height===0 && document.getElementById('module-working-form').getBoundingClientRect().height>0 && moduleActionClicks===0")=="true",
+                "resuming filters immediately hides the campaign module while keeping its working-form exception");
             await Navigate("https://auth.mail.ru/login/render-test"); await Ready(session);
             check(!core.Settings.IsPasswordAutosaveEnabled && !core.Settings.IsWebMessageEnabled,"official authentication retains disabled password storage and host messaging");
+            await core.ExecuteScriptAsync("document.body.insertAdjacentHTML('beforeend','<div class=vkuiPopoutRoot id=auth-module style=\"height:80px\"><a href=\"https://vk.cc/reference\">Справка входа</a></div>')");
+            check(await core.ExecuteScriptAsync("document.getElementById('auth-module').getBoundingClientRect().height>0")=="true",
+                "dedicated campaign-module rule does not run on official authentication pages");
             paused=true;await session.ApplySettings();await Navigate("https://e.mail.ru/inbox/render-first");
             check(await core.ExecuteScriptAsync("document.getElementById('banner').getBoundingClientRect().height>0")=="true","pausing filters restores the original page without a waiting surface");
             session.SetActive(false);check(session.Surface.Visibility==Visibility.Collapsed,"inactive account hides its entire browser surface");

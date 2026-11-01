@@ -246,7 +246,10 @@ public sealed class BrowserSession : IDisposable
         core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All, CoreWebView2WebResourceRequestSourceKinds.All);
         core.WebResourceRequested += (_, e) =>
         {
-            if (!store.Rules.ShouldBlock(e.Request.Uri, store.Settings.BlockRequests && !paused())) return;
+            var enabled = store.Settings.BlockRequests && !paused();
+            var promotionModule = !popup && !cloud && e.ResourceContext == CoreWebView2WebResourceContext.Script
+                && PromotionModulePolicy.ShouldBlockScript(e.Request.Uri, core.Source, store.Rules, enabled);
+            if (!promotionModule && !store.Rules.ShouldBlock(e.Request.Uri, enabled)) return;
             e.Response = environment!.CreateWebResourceResponse(null, 403, "Blocked by MailTrim", "Cache-Control: no-store");
             blocked++;
             if (!background && (blocked == 1 || blocked % 10 == 0)) status($"Заблокировано запросов: {blocked}");

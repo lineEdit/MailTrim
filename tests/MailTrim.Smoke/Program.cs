@@ -71,6 +71,7 @@ internal static class Program
                 if (args.Length == 1 || args[1] == "--render-only") await NativeCloudChecks.Run(store, host, window, Check);
                 if (args.Length == 1 || args[1] == "--render-only") await CloudPromoChecks.Run(store, host, window, Check);
                 if (args.Length == 1 || args[1] == "--render-only") await PresentationChecks.Run(store, host, window, Check);
+                if (args.Length == 1 || args[1] == "--render-only") await PromotionModuleChecks.Run(store, host, window, Check);
                 if (args.Length == 2 && args[1] == "--render-only") { result = 0; return; }
                 if (args.Length == 1 || args[1] == "--groups-only") await GroupChecks.Run(store, host, window, Check);
                 if (args.Length == 2 && args[1] == "--groups-only") { result = 0; return; }
