@@ -17,6 +17,9 @@
   </PropertyGroup>
   <ItemGroup>
     <AssemblyMetadata Include="MailTrimDistribution" Value="$(MailTrimDistribution)" />
+    <!-- Desktop registrations are app identity, not user grants. Never embed account tokens. -->
+    <AssemblyMetadata Include="MailTrimGmailClientId" Value="$(MAILTRIM_GMAIL_CLIENT_ID)" />
+    <AssemblyMetadata Include="MailTrimGmailClientSecret" Value="$(MAILTRIM_GMAIL_CLIENT_SECRET)" />
     <Using Remove="System.Windows.Forms" />
     <Using Remove="System.Drawing" />
     <ProjectReference Include="../MailTrim.Core/MailTrim.Core.csproj" />
@@ -27,6 +30,34 @@
     <Content Include="../../rules/legacy-0.1.0.json" Link="rules/legacy-0.1.0.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="../../rules/legacy-0.1.1.json" Link="rules/legacy-0.1.1.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <UsingTask TaskName="ValidateGmailRegistration" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <ClientId ParameterType="System.String" />
+      <ClientSecret ParameterType="System.String" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System" />
+      <Using Namespace="System.Linq" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        const string suffix = ".apps.googleusercontent.com";
+        bool configured = !string.IsNullOrEmpty(ClientId) || !string.IsNullOrEmpty(ClientSecret);
+        Func<char, bool> ascii = c => c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9';
+        bool validId = ClientId != null && ClientId.Length > suffix.Length && ClientId.Length <= 500
+            && ascii(ClientId[0])
+            && ClientId.EndsWith(suffix, StringComparison.Ordinal) && ClientId.All(c => ascii(c) || c == '-' || c == '_' || c == '.');
+        bool validSecret = ClientSecret != null && ClientSecret.Length >= 1 && ClientSecret.Length <= 500
+            && ClientSecret.All(c => ascii(c) || c == '-' || c == '_');
+        if (configured && !(validId && validSecret))
+        {
+            Log.LogError("Gmail registration is incomplete or invalid. Set both MAILTRIM_GMAIL_CLIENT_ID and MAILTRIM_GMAIL_CLIENT_SECRET to a Google Desktop app registration, or leave both unset.");
+            return false;
+        }
+      ]]></Code>
+    </Task>
+  </UsingTask>
+  <Target Name="ValidateBundledGmailRegistration" BeforeTargets="CoreGenerateAssemblyInfo">
+    <ValidateGmailRegistration ClientId="$(MAILTRIM_GMAIL_CLIENT_ID)" ClientSecret="$(MAILTRIM_GMAIL_CLIENT_SECRET)" />
+  </Target>
   <Target Name="CopyWebView2Notices" AfterTargets="Publish">
     <Copy SourceFiles="$(PkgMicrosoft_Web_WebView2)/LICENSE.txt" DestinationFiles="$(PublishDir)licenses/WebView2/LICENSE.txt" />
     <Copy SourceFiles="$(PkgMicrosoft_Web_WebView2)/NOTICE.txt" DestinationFiles="$(PublishDir)licenses/WebView2/NOTICE.txt" />

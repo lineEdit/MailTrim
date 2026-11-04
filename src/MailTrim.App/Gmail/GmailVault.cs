@@ -39,6 +39,18 @@ public sealed class GmailVault(string root, Guid profile)
         }
         finally { CryptographicOperations.ZeroMemory(plain); }
     }
-    public void ClearCache() { File.Delete(PathFor("cache")); File.Delete(PathFor("cache") + ".tmp"); }
-    public void Clear() { foreach (var purpose in new[] { "credentials", "cache" }) { File.Delete(PathFor(purpose)); File.Delete(PathFor(purpose) + ".tmp"); } }
+    public void ClearCache() => DeletePurpose("cache");
+    public void Clear() { foreach (var purpose in new[] { "credentials", "cache" }) DeletePurpose(purpose); }
+    private void DeletePurpose(string purpose)
+    {
+        DeleteIfPresent(PathFor(purpose));
+        DeleteIfPresent(PathFor(purpose) + ".tmp");
+    }
+    private static void DeleteIfPresent(string path)
+    {
+        // A new Gmail profile has no directory until its first encrypted save.
+        // Missing data is already cleared; access and other I/O failures still matter.
+        try { File.Delete(path); }
+        catch (DirectoryNotFoundException) { }
+    }
 }

@@ -17,6 +17,10 @@ jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 20
+    # Never expose the app registration to pull-request builds, including same-repository PRs.
+    env:
+      MAILTRIM_GMAIL_CLIENT_ID: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.GMAIL_CLIENT_ID || '' }}
+      MAILTRIM_GMAIL_CLIENT_SECRET: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && secrets.GMAIL_CLIENT_SECRET || '' }}
     steps:
       - uses: actions/checkout@v4
       - name: Validate release tag

@@ -65,7 +65,11 @@ internal static class Program
                     try { chronologyCache.SaveHeaders([headerOnly], cancelledHeaders.Token); } catch (OperationCanceledException) { headersStopped = true; }
                     Check(headersStopped && chronologyCache.List().Count == 0, "cancelled refresh cannot repopulate a cleared header cache");
                 }
+                GmailRegistrationChecks.Run(store, Check);
+                await GmailProfileChecks.Run(store, host, Check);
+                await GmailBrowserChecks.Run(store, Check);
                 await GmailChecks.Run(store, host, Check);
+                await GmailSignInViewChecks.Run(store, host, Check);
                 if (args.Length == 2 && args[1] == "--gmail-only") { result = 0; return; }
                 if (args.Length == 1 || args[1] == "--render-only") await CloudChecks.Run(store, host, window, Check);
                 if (args.Length == 1 || args[1] == "--render-only") await NativeCloudChecks.Run(store, host, window, Check);

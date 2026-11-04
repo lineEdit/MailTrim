@@ -18,6 +18,7 @@ public sealed class GmailPane : Grid, IDisposable
     private readonly Action<int> notify;
     private readonly GmailVault vault;
     private readonly GmailOAuth oauth;
+    private readonly GmailRegistrationStore registration;
     private readonly GmailClient api;
     private readonly ReaderImageLoader images = new();
     private readonly CancellationTokenSource lifetime = new();
@@ -29,6 +30,10 @@ public sealed class GmailPane : Grid, IDisposable
     private readonly TextBlock note = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(6), FontSize = 12 };
     private readonly StackPanel body = new() { Margin = new Thickness(20,12,20,20) };
     private readonly StackPanel actions = new() { Orientation = Orientation.Horizontal };
+    private readonly DockPanel sidebar = new();
+    private readonly DockPanel list = new();
+    private readonly DockPanel content = new();
+    private readonly GridSplitter splitter = new() { Width = 5, HorizontalAlignment = HorizontalAlignment.Stretch, ResizeDirection = GridResizeDirection.Columns, ResizeBehavior = GridResizeBehavior.PreviousAndNext };
     private readonly Button more;
     private readonly Dictionary<string, GmailMessage> prepared = [];
     private readonly Dictionary<string, GmailCachedPage> pages = [];
@@ -41,6 +46,7 @@ public sealed class GmailPane : Grid, IDisposable
     private bool selecting;
     private bool disposed;
     private bool active;
+    private bool showingAccount;
     private CancellationTokenSource? imageRender;
     private CancellationTokenSource? connecting;
     private CancellationTokenSource? preparing;
@@ -48,30 +54,31 @@ public sealed class GmailPane : Grid, IDisposable
     public bool HasDraft { get; private set; }
     public bool Connected => oauth.Connected;
     public Task Ready { get; private set; } = Task.CompletedTask;
-    public GmailPane(LocalStore store, AccountProfile profile, Action<Guid, MailboxStatus> status, Action<int> notify, System.Net.Http.HttpMessageHandler? testHandler = null)
+    public GmailPane(LocalStore store, AccountProfile profile, Action<Guid, MailboxStatus> status, Action<int> notify, System.Net.Http.HttpMessageHandler? testHandler = null, GmailRegistrationStore? registrationStore = null, GmailOAuth? testOAuth = null)
     {
         this.store = store; this.profile = profile; this.status = status; this.notify = notify;
-        vault = new(store.Root, profile.Id); oauth = new(vault); api = new(oauth.AccessToken,testHandler);
+        vault = new(store.Root, profile.Id); oauth = testOAuth ?? new(vault); api = new(oauth.AccessToken,testHandler);
+        registration = registrationStore ?? new(store.Root);
         SetResourceReference(BackgroundProperty,"Panel");
         ColumnDefinitions.Add(new() { Width = new GridLength(170) });
         ColumnDefinitions.Add(new() { Width = new GridLength(320) });
         ColumnDefinitions.Add(new() { Width = new GridLength(5) });
         ColumnDefinitions.Add(new() { Width = new GridLength(1,GridUnitType.Star) });
-        var sidebar = new DockPanel(); Children.Add(sidebar);
+        Children.Add(sidebar);
         var bottom = new StackPanel(); DockPanel.SetDock(bottom,Dock.Bottom); sidebar.Children.Add(bottom);
         bottom.Children.Add(Button("⚙", () => { (Window.GetWindow(this) as MainWindow)?.ShowSettings(); return Task.CompletedTask; }));
-        bottom.Children.Add(Button("Подключение Gmail", Configure));
+        bottom.Children.Add(Button("Аккаунт Google", () => { if (!HasDraft) ShowSetup(); else note.Text = "Сначала отправьте или отмените открытый черновик."; return Task.CompletedTask; }));
         bottom.Children.Add(Button("⇔", () => { ColumnDefinitions[0].Width = new GridLength(ColumnDefinitions[0].Width.Value == 170 ? 40 : 170); return Task.CompletedTask; }));
         var compose = Button("Написать", () => { Compose(null); return Task.CompletedTask; }); DockPanel.SetDock(compose,Dock.Top); sidebar.Children.Add(compose);
         sidebar.Children.Add(folders);
-        var list = new DockPanel(); SetColumn(list,1); Children.Add(list);
+        SetColumn(list,1); Children.Add(list);
         var tools = new DockPanel(); DockPanel.SetDock(tools,Dock.Top); list.Children.Add(tools);
         var find = Button("Найти", () => ChangeFolder(label,search.Text.Trim())); DockPanel.SetDock(find,Dock.Right); tools.Children.Add(find); tools.Children.Add(search);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal }; DockPanel.SetDock(buttons,Dock.Top); list.Children.Add(buttons);
         buttons.Children.Add(Button("Обновить", Refresh)); more = Button("Ещё", LoadMore); buttons.Children.Add(more);
         DockPanel.SetDock(note,Dock.Top); list.Children.Add(note); list.Children.Add(messages);
-        var splitter = new GridSplitter { Width = 5, HorizontalAlignment = HorizontalAlignment.Stretch, ResizeDirection = GridResizeDirection.Columns, ResizeBehavior = GridResizeBehavior.PreviousAndNext }; SetColumn(splitter,2); Children.Add(splitter);
-        var content = new DockPanel(); SetColumn(content,3); Children.Add(content); DockPanel.SetDock(actions,Dock.Top); content.Children.Add(actions);
+        SetColumn(splitter,2); Children.Add(splitter);
+        SetColumn(content,3); Children.Add(content); DockPanel.SetDock(actions,Dock.Top); content.Children.Add(actions);
         content.Children.Add(new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
         var template = new DataTemplate(typeof(GmailMessage));
         var text = new FrameworkElementFactory(typeof(TextBlock)); text.SetValue(TextBlock.TextWrappingProperty,TextWrapping.Wrap); text.SetValue(FrameworkElement.MarginProperty,new Thickness(6)); text.SetBinding(TextBlock.TextProperty,new System.Windows.Data.Binding());
@@ -117,12 +124,15 @@ public sealed class GmailPane : Grid, IDisposable
             store.Log("gmail_operation_failed");
             note.Text = ex is GmailApiException ge ? ge.Message switch
             {
-                "gmail_sign_in" => "Нужен повторный вход Google. Откройте «Подключение Gmail».",
-                "gmail_permissions" => "Google отказал в доступе. Проверьте Gmail API, тестовых пользователей и разрешения OAuth.",
+                "gmail_sign_in" => "Нужен повторный вход Google. Нажмите «Аккаунт Google → Войти через браузер».",
+                "gmail_permissions" => "Google не разрешил доступ к почте. Для тестовой версии ваш адрес должен быть разрешён в настройках приложения Google.",
+                "gmail_client_invalid" => "Google не принял регистрацию MailTrim. Нужна разовая настройка приложения, затем можно повторить вход.",
+                "gmail_browser_unavailable" => "Не удалось открыть браузер. Проверьте, выбран ли в Windows браузер по умолчанию, и повторите вход.",
+                "gmail_network" => "Не удалось связаться с Google. Проверьте подключение и повторите вход.",
                 "gmail_quota" => "Лимит запросов Google. Подождите до следующей проверки.",
                 "gmail_missing" => "Письмо больше недоступно. Обновите список.",
                 "gmail_consent_cancelled" => "Вход отменён в Google.", _ => "Не удалось выполнить запрос Gmail. Проверьте сеть и повторите."
-            } : "Не удалось выполнить операцию Gmail. Проверьте сеть, OAuth-клиент и локальные файлы.";
+            } : "Не удалось выполнить операцию Gmail. Проверьте подключение и доступ к локальным файлам.";
             status(profile.Id,new("Gmail: " + note.Text,null,null));
         }
         finally { operation.Release(); }
@@ -136,6 +146,11 @@ public sealed class GmailPane : Grid, IDisposable
     public void SetActive(bool value)
     {
         active = value; Visibility = value ? Visibility.Visible : Visibility.Collapsed;
+        if (value && showingAccount)
+        {
+            if (!oauth.Connected && connecting is null) ShowSetup();
+            return;
+        }
         if (value && selected is not null && !HasDraft) Render(selected);
         if (value) _ = Execute(async () => { if (oauth.Connected) { await LoadFolders(); await Refresh(); } else ShowSetup(); });
         else { imageRender?.Cancel(); }
@@ -151,51 +166,92 @@ public sealed class GmailPane : Grid, IDisposable
         finally { selecting = false; }
     }
     private async Task LoadFolders() => SetFolders(await api.Labels(lifetime.Token));
+    private GmailClientRegistration? SignInRegistration => oauth.SavedRegistration ?? registration.Load();
+    public bool BrowserSignInAvailable => SignInRegistration is not null;
+    private void AccountLayout(bool value)
+    {
+        showingAccount = value;
+        sidebar.Visibility = list.Visibility = splitter.Visibility = value ? Visibility.Collapsed : Visibility.Visible;
+        SetColumn(content,value ? 0 : 3); SetColumnSpan(content,value ? 4 : 1);
+    }
+    private void ShowMailbox()
+    {
+        if (showingAccount) { body.Children.Clear(); actions.Children.Clear(); }
+        AccountLayout(false);
+    }
+    private TextBlock ConnectionNote()
+    {
+        var text = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0,12,0,0) };
+        text.SetBinding(TextBlock.TextProperty,new System.Windows.Data.Binding(nameof(TextBlock.Text)) { Source = note });
+        text.SetResourceReference(TextBlock.ForegroundProperty,"Muted");
+        return text;
+    }
     private void ShowSetup()
     {
+        if (disposed) return;
+        AccountLayout(true);
         body.Children.Clear(); actions.Children.Clear();
-        body.Children.Add(new TextBlock { Text = "Gmail через официальный API", FontSize = 24, Margin = new Thickness(0,0,0,12) });
-        body.Children.Add(new TextBlock { Text = "Создайте OAuth-клиент Google типа Desktop app, включите Gmail API и добавьте свой адрес в тестовые пользователи. Импортируйте JSON клиента в «Подключение Gmail». Вход откроется в системном браузере. Пароль Google приложение не получает.", TextWrapping = TextWrapping.Wrap });
-        body.Children.Add(Button("Подключить Gmail", Configure));
-        body.Children.Add(Button("Инструкция подключения", () => { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://github.com/lineEdit/MailTrim/blob/main/docs/GMAIL.md") { UseShellExecute = true }); return Task.CompletedTask; }));
-        note.Text = "Gmail не подключён";
+        var panel = new StackPanel { MaxWidth = 500, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(8,32,8,8) };
+        body.Children.Add(panel);
+        panel.Children.Add(new TextBlock { Text = oauth.Connected ? "Аккаунт Google" : "Подключите Gmail", FontSize = 28, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0,0,0,16) });
+        panel.Children.Add(new TextBlock { Text = oauth.Connected && address.Length > 0 ? address : "Войдите в Google в своём браузере. После подтверждения почта появится здесь.", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0,0,0,12) });
+        var available = BrowserSignInAvailable;
+        if (!available)
+            panel.Children.Add(new TextBlock { Text = "В этой сборке вход Google ещё не настроен. Сначала нужно один раз зарегистрировать MailTrim в Google. Повторять настройку для каждого ящика не потребуется.", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0,0,0,12) });
+        var signIn = new Button { Content = "Войти через браузер", IsEnabled = available && connecting is null, HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(22,11,22,11), Margin = new Thickness(0,4,0,12), Foreground = Brushes.White };
+        signIn.SetResourceReference(BackgroundProperty,"Accent");
+        signIn.Click += async (_,_) =>
+        {
+            signIn.IsEnabled = false;
+            try { await Execute(ConnectBrowser); }
+            finally { if (!disposed) signIn.IsEnabled = BrowserSignInAvailable && connecting is null; }
+        };
+        panel.Children.Add(signIn);
+        var privacy = new TextBlock { Text = "Пароль и код подтверждения вводятся только на странице Google. MailTrim не получает пароль и не переносит cookies браузера.", TextWrapping = TextWrapping.Wrap, FontSize = 12, Margin = new Thickness(0,0,0,16) };
+        privacy.SetResourceReference(TextBlock.ForegroundProperty,"Muted"); panel.Children.Add(privacy);
+        if (oauth.Connected)
+        {
+            panel.Children.Add(Button("Вернуться к письмам", () => { ShowMailbox(); if (selected is not null) Render(selected); return Task.CompletedTask; }));
+            panel.Children.Add(Button("Отключить этот аккаунт", async () =>
+            {
+                if (MessageBox.Show(Window.GetWindow(this),"Отключить Gmail и удалить локальные данные этого аккаунта? Письма в Google останутся.","Отключение Gmail",MessageBoxButton.YesNo,MessageBoxImage.Question,MessageBoxResult.No) == MessageBoxResult.Yes) await ClearDataInternal();
+            }));
+        }
+        panel.Children.Add(Button("Открыть Gmail в браузере", () => { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://mail.google.com/") { UseShellExecute = true }); return Task.CompletedTask; }));
+        panel.Children.Add(ConnectionNote());
+        var advanced = new StackPanel();
+        advanced.Children.Add(new TextBlock { Text = "Настройка приложения выполняется один раз на этом компьютере. Уже подключённые аккаунты сохраняют свои разрешения.", TextWrapping = TextWrapping.Wrap });
+        advanced.Children.Add(Button("Настроить приложение Google…", () =>
+        {
+            if (new GmailConnectionSettingsWindow(registration) { Owner = Window.GetWindow(this) }.ShowDialog() == true) ShowSetup();
+            return Task.CompletedTask;
+        }));
+        panel.Children.Add(new Expander { Header = "Дополнительно", Content = advanced, IsExpanded = false, Margin = new Thickness(0,16,0,0) });
+        note.Text = oauth.Connected ? "Gmail подключён" : available ? "Готово к входу через браузер" : "Нужна разовая настройка MailTrim";
     }
-    private async Task Configure()
+    private async Task ConnectBrowser()
     {
         if (HasDraft) { note.Text = "Сначала отправьте или отмените открытый черновик."; return; }
-        var owner = Window.GetWindow(this);
-        var panel = new StackPanel { Margin = new Thickness(20) };
-        panel.Children.Add(new TextBlock { Text = "JSON OAuth-клиента Google типа Desktop app. Пароль Google здесь не нужен.", TextWrapping = TextWrapping.Wrap });
-        var id = new TextBox { Margin = new Thickness(0,8,0,8), MaxLength = 500 };
-        var secret = new PasswordBox { Margin = new Thickness(0,8,0,8), MaxLength = 500 };
-        panel.Children.Add(new TextBlock { Text = "Client ID" }); panel.Children.Add(id); panel.Children.Add(new TextBlock { Text = "Client secret (из JSON клиента)" }); panel.Children.Add(secret);
-        var import = new Button { Content = "Импортировать JSON…", Margin = new Thickness(0,8,0,8) }; panel.Children.Add(import);
-        var error = new TextBlock { TextWrapping = TextWrapping.Wrap }; panel.Children.Add(error);
-        var connect = new Button { Content = "Войти через браузер", IsDefault = true }; panel.Children.Add(connect);
-        var disconnect = new Button { Content = "Отключить и очистить локальные данные", IsEnabled = oauth.Connected }; panel.Children.Add(disconnect);
-        var dialog = new Window { Title = "Подключение Gmail", Owner = owner, Width = 480, SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner };
-        dialog.Content = panel;
-        import.Click += (_,_) =>
-        {
-            var file = new OpenFileDialog { Filter = "Google OAuth client (*.json)|*.json" };
-            if (file.ShowDialog(dialog) != true) return;
-            try { if (new FileInfo(file.FileName).Length > 65536) throw new FormatException(); var config = GmailOAuth.ParseDesktopConfig(File.ReadAllText(file.FileName)); id.Text = config.Id; secret.Password = config.Secret; error.Text = "Desktop client загружен"; }
-            catch { error.Text = "Не удалось прочитать Desktop OAuth client. Проверьте JSON."; }
-        };
-        bool clear = false;
-        connect.Click += (_,_) => { if (id.Text.Trim().Length > 0 && secret.Password.Length > 0) dialog.DialogResult = true; };
-        disconnect.Click += (_,_) => { if (MessageBox.Show(dialog,"Удалить локальные токены и кэш этого Gmail? Серверные письма останутся. Разрешение Google можно отозвать в настройках аккаунта Google.","Отключение",MessageBoxButton.YesNo) == MessageBoxResult.Yes) { clear = true; dialog.DialogResult = true; } };
-        if (dialog.ShowDialog() != true) return;
-        if (clear) { await ClearDataInternal(); return; }
+        var client = SignInRegistration;
+        if (client is null) { ShowSetup(); return; }
+        if (connecting is not null) return;
         await StopPreparation();
         note.Text = "Завершите вход в системном браузере (до 3 минут)…";
+        body.Children.Clear(); actions.Children.Clear();
+        body.Children.Add(new TextBlock { Text = "Ожидаю вход в Google", FontSize = 26, Margin = new Thickness(0,20,0,12) });
+        body.Children.Add(new TextBlock { Text = "Подтвердите доступ в открывшемся браузере. После завершения вернитесь в MailTrim.", TextWrapping = TextWrapping.Wrap });
+        body.Children.Add(ConnectionNote());
         using var connectStop = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token); connecting = connectStop;
         var cancel = new Button { Content = "Отменить вход", HorizontalAlignment = HorizontalAlignment.Left };
         cancel.Click += (_,_) => connectStop.Cancel(); body.Children.Add(cancel);
-        try { await oauth.Connect(id.Text.Trim(),secret.Password,connectStop.Token); }
-        finally { connecting = null; body.Children.Remove(cancel); }
+        var completed = false;
+        try { await oauth.Connect(client,connectStop.Token); completed = true; }
+        finally { connecting = null; body.Children.Remove(cancel); if (!completed && !disposed) ShowSetup(); }
         prepared.Clear(); pages.Clear(); selected = null; inboxHead = null; label = "INBOX"; query = "";
-        address = await api.Address(lifetime.Token); await LoadFolders(); await Refresh(); await CheckStatus();
+        try { address = await api.Address(lifetime.Token); await LoadFolders(); await Refresh(); await CheckStatus(); }
+        catch { if (!disposed) ShowSetup(); throw; }
+        body.Children.Clear(); body.Children.Add(new TextBlock { Text = "Gmail подключён. Выберите письмо в списке.", TextWrapping = TextWrapping.Wrap });
+        if (active && Window.GetWindow(this) is MainWindow window) window.RestoreWindow();
     }
     private void ShowCached()
     {
@@ -226,6 +282,7 @@ public sealed class GmailPane : Grid, IDisposable
         if (!oauth.Connected) { ShowSetup(); return; }
         if (HasDraft) return;
         if (append && next is null) return;
+        ShowMailbox();
         note.Text = append ? "Загрузка следующей страницы…" : "Обновление Gmail…";
         var page = await api.Page(label,query,append ? next : null,lifetime.Token);
         var list = append ? ((GmailMessage[]?)messages.ItemsSource ?? []).Concat(page.Messages).DistinctBy(m => m.Id).ToArray() : page.Messages;
@@ -346,7 +403,7 @@ public sealed class GmailPane : Grid, IDisposable
         if (store.Settings.NotifyNewMail && added > 0) notify(added);
         
     }
-    private async Task Poll() { await CheckStatus(); if (active && !HasDraft) await Refresh(); }
+    private async Task Poll() { await CheckStatus(); if (active && !HasDraft && !showingAccount) await Refresh(); }
     public void RequestCheck() => _ = Execute(Poll, background: true);
     public void RequestRefresh() => _ = Execute(Refresh);
     public void Inbox() => _ = Execute(() => ChangeFolder("INBOX",""));
