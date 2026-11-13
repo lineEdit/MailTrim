@@ -16,6 +16,10 @@ foreach (var url in new[] { "https://e.mail.ru/inbox/", "https://account.mail.ru
 foreach (var url in new[] { "https://account.mail.ru/login", "https://id.vk.com/auth", "https://id.vk.ru/auth" })
     Check(NavigationPolicy.IsAuthentication(url), "official authentication origin " + url);
 Check(!NavigationPolicy.IsAuthentication("https://e.mail.ru/inbox/") && !NavigationPolicy.IsAuthentication("https://cloud.mail.ru/home/"), "mail and Cloud are not authentication documents");
+Check(NavigationPolicy.ShouldPromoteAuthenticationFrame("https://id.vk.ru/auth", "https://e.mail.ru/inbox/")
+    && NavigationPolicy.ShouldPromoteAuthenticationFrame("https://account.mail.ru/login", "https://cloud.mail.ru/home/"), "authenticated Mail and Cloud frame handoffs are promoted");
+Check(!NavigationPolicy.ShouldPromoteAuthenticationFrame("https://e.mail.ru/inbox/", "https://e.mail.ru/inbox/")
+    && !NavigationPolicy.ShouldPromoteAuthenticationFrame("https://id.vk.ru/auth", "https://evil.example/inbox/"), "ordinary and untrusted frame navigation is never promoted");
 foreach (var url in new[] { "https://e.mail.ru.evil.test/", "https://evilmail.ru/", "http://e.mail.ru/", "https://e.mail.ru:444/", "https://evil@e.mail.ru/", "file:///C:/Windows/", "javascript:alert(1)", "https://news.mail.ru/" })
     Check(!NavigationPolicy.IsInternal(url), "reject internal " + url);
 Check(!NavigationPolicy.IsExternal("file:///C:/Windows"), "no shell file launch");
@@ -177,7 +181,7 @@ async Task<bool> CompressedFeed(string json, string encoding, UpdateCheckError? 
     });
     try
     {
-        using var client = UpdateCatalogClient.CreateClient();
+        using var client = UpdateCatalogClient.CreateClient(useProxy: false);
         bool correct;
         try { correct = (await UpdateCatalogClient.Fetch(client, address, true, deadline.Token))?.Tag == "v0.10.0" && expected is null; }
         catch (UpdateCheckException ex) { correct = ex.Error == expected; }

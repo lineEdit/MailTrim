@@ -11,8 +11,9 @@ public sealed class UpdateCheckException(UpdateCheckError error) : Exception(err
 }
 public static class UpdateCatalogClient
 {
-    public static HttpClient CreateClient() => new(new HttpClientHandler
+    public static HttpClient CreateClient(bool useProxy = true) => new(new HttpClientHandler
     {
+        UseProxy = useProxy,
         AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli
     }) { Timeout = Timeout.InfiniteTimeSpan };
 

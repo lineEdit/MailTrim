@@ -228,6 +228,7 @@ public sealed class BrowserSession : IDisposable
         var core = view.CoreWebView2;
         var provisionalPopup = closeWorkspacePopup is not null;
         var popupRoutePending = false;
+        var framePromotionPending = false;
         core.Settings.AreHostObjectsAllowed = false;
         core.Settings.IsWebMessageEnabled = false;
         core.Settings.IsPasswordAutosaveEnabled = false;
@@ -236,6 +237,28 @@ public sealed class BrowserSession : IDisposable
         core.Settings.AreDefaultContextMenusEnabled = true;
         core.Settings.IsStatusBarEnabled = false;
         if (!popup) core.Settings.AreDefaultScriptDialogsEnabled = !SourceIsHidden(cloud);
+        // VK ID keeps account.mail.ru in a cross-origin frame. After a QR
+        // confirmation Mail may finish by navigating that frame to the inbox,
+        // without replacing the outer id.vk.ru document. Promote that exact
+        // allow-listed handoff to the main WebView so the authenticated session
+        // cannot remain stranded inside an invisible/temporary frame.
+        void AttachAuthenticationFrame(CoreWebView2Frame frame)
+        {
+            frame.NavigationStarting += (_, e) =>
+            {
+                if (framePromotionPending || !NavigationPolicy.ShouldPromoteAuthenticationFrame(core.Source, e.Uri)) return;
+                e.Cancel = true;
+                framePromotionPending = true;
+                var destination = e.Uri;
+                store.Log(NavigationPolicy.IsMail(destination) ? "auth_frame_mail_handoff" : "auth_frame_cloud_handoff");
+                _ = owner.Dispatcher.BeginInvoke(() =>
+                {
+                    if (disposed) return;
+                    core.Navigate(destination);
+                });
+            };
+        }
+        core.FrameCreated += (_, e) => AttachAuthenticationFrame(e.Frame);
         core.NavigationStarting += (_, e) =>
         {
             // VK ID places the Mail login document in a cross-site frame. Balanced
@@ -296,6 +319,7 @@ public sealed class BrowserSession : IDisposable
         };
         core.NavigationCompleted += (_, e) =>
         {
+            framePromotionPending = false;
             if (background || e.WebErrorStatus == CoreWebView2WebErrorStatus.OperationCanceled) return;
             status(e.IsSuccess ? $"Готово · заблокировано запросов: {blocked}" : "Страница не загрузилась. Проверьте сеть или временно отключите фильтры.");
             if (!e.IsSuccess) store.Log("navigation_failed");

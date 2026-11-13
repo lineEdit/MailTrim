@@ -18,6 +18,8 @@ public static class NavigationPolicy
     public static bool IsCloud(string url) => Uri.TryCreate(url, UriKind.Absolute, out var u)
         && u.Scheme == "https" && u.IsDefaultPort && u.UserInfo.Length == 0 && u.IdnHost == "cloud.mail.ru";
     public static bool IsAuthentication(string url) => IsInternal(url) && !IsMail(url) && !IsCloud(url);
+    public static bool ShouldPromoteAuthenticationFrame(string topLevelUrl, string frameUrl) =>
+        IsAuthentication(topLevelUrl) && (IsMail(frameUrl) || IsCloud(frameUrl));
     public static bool HostMatches(string host, string domain) => host.Equals(domain, StringComparison.OrdinalIgnoreCase)
         || host.EndsWith("." + domain, StringComparison.OrdinalIgnoreCase);
 }
