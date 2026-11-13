@@ -110,6 +110,7 @@ internal static class PresentationChecks
             await core.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, true, false));
             check(await core.ExecuteScriptAsync("document.getElementById('campaign-module').getBoundingClientRect().height===0 && document.getElementById('module-working-form').getBoundingClientRect().height>0 && moduleActionClicks===0")=="true",
                 "resuming filters immediately hides the campaign module while keeping its working-form exception");
+            await CheckMaxPromo();
             await Navigate("https://auth.mail.ru/login/render-test"); await Ready(session);
             check(!core.Settings.IsPasswordAutosaveEnabled && !core.Settings.IsWebMessageEnabled,"official authentication retains disabled password storage and host messaging");
             await core.ExecuteScriptAsync("document.body.insertAdjacentHTML('beforeend','<div class=vkuiPopoutRoot id=auth-module style=\"height:80px\"><a href=\"https://vk.cc/reference\">Справка входа</a></div>')");
@@ -122,6 +123,62 @@ internal static class PresentationChecks
             session.SetReadingOnly(true);check(session.View.Visibility==Visibility.Hidden,"native reading continues to collect with a hidden browser");
         }
         finally { host.Children.Remove(session.Surface); }
+
+        async Task CheckMaxPromo()
+        {
+            var core = session.View.CoreWebView2;
+            await core.ExecuteScriptAsync("""
+                window.maxPromoFrames=0;
+                window.maxPromoLeaks=0;
+                window.maxPromoClicks=0;
+                const promoCopy=`
+                  <div role="img" aria-label="Synthetic MAX artwork" style="height:170px;background:linear-gradient(#acf,#bae)"></div>
+                  <h2><span>Важные уведомления</span><span> от Mail </span><span>теперь в </span><strong>MAX</strong></h2>
+                  <p>Получайте сообщения о новых письмах и напоминания о поездках — в MAX на любом устройстве.</p>
+                  <button type="button" onclick="window.maxPromoClicks++">Попробовать</button>
+                  <a href="https://max.ru/" onclick="event.preventDefault();window.maxPromoClicks++">Подробнее</a>`;
+                const cardStyle='position:fixed;left:16px;bottom:16px;width:300px;height:400px;box-sizing:border-box;padding:12px;background:white;border-radius:16px';
+                document.body.insertAdjacentHTML('beforeend',`
+                  <div class="letter-body" id="max-quote"><section id="max-quoted-card" style="${cardStyle}">${promoCopy}</section></div>
+                  <div id="max-working-toast" role="status" style="position:fixed;left:16px;bottom:16px;width:300px;height:100px;background:white">
+                    <h2>Письмо отправлено</h2><button type="button" aria-label="Закрыть" onclick="window.maxPromoClicks++">×</button>
+                  </div>`);
+                window.insertMaxPromo=()=>{
+                  document.getElementById('max-promo')?.remove();
+                  document.body.insertAdjacentHTML('beforeend',`<section id="max-promo" style="${cardStyle}">${promoCopy}</section>`);
+                  requestAnimationFrame(()=>{
+                    if(document.getElementById('max-promo').getBoundingClientRect().height>0)window.maxPromoLeaks++;
+                    window.maxPromoFrames++;
+                  });
+                };
+                window.insertMaxPromo();
+                """);
+            await WaitForFrame(1);
+            check(await core.ExecuteScriptAsync("maxPromoLeaks===0 && maxPromoClicks===0 && document.getElementById('max-promo').getBoundingClientRect().height===0") == "true",
+                "unmarked bottom-left MAX notification offer is hidden before its first frame without activating either link");
+            await core.ExecuteScriptAsync("window.insertMaxPromo()");
+            await WaitForFrame(2);
+            check(await core.ExecuteScriptAsync("maxPromoLeaks===0 && maxPromoClicks===0 && document.getElementById('max-promo').getBoundingClientRect().height===0") == "true",
+                "a reinserted MAX notification offer also stays hidden before paint");
+            check(await core.ExecuteScriptAsync("document.getElementById('max-quoted-card').getBoundingClientRect().height>0 && document.getElementById('max-working-toast').getBoundingClientRect().height>0 && maxPromoClicks===0") == "true",
+                "MAX filtering preserves the same copy inside a letter and a working bottom-left notification");
+            await core.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, false, false));
+            check(await core.ExecuteScriptAsync("document.getElementById('max-promo').getBoundingClientRect().height>0 && maxPromoClicks===0") == "true",
+                "pausing filters restores the MAX offer without clicking any controls");
+            await core.ExecuteScriptAsync(CosmeticScript.Create(store.Rules, true, false));
+            check(await core.ExecuteScriptAsync("document.getElementById('max-promo').getBoundingClientRect().height===0 && document.getElementById('max-quoted-card').getBoundingClientRect().height>0 && document.getElementById('max-working-toast').getBoundingClientRect().height>0 && maxPromoClicks===0") == "true",
+                "resuming filters hides the MAX offer again while preserving mail and the working notification");
+
+            async Task WaitForFrame(int count)
+            {
+                for (var attempt = 0; attempt < 200; attempt++)
+                {
+                    if (await core.ExecuteScriptAsync($"window.maxPromoFrames >= {count}") == "true") return;
+                    await Task.Delay(25);
+                }
+                throw new TimeoutException("MAX promotion frame audit did not run");
+            }
+        }
 
         async Task Navigate(string url)
         {

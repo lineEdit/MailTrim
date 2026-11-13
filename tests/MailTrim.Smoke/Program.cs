@@ -70,6 +70,7 @@ internal static class Program
                 await GmailBrowserChecks.Run(store, Check);
                 await GmailChecks.Run(store, host, Check);
                 await GmailSignInViewChecks.Run(store, host, Check);
+                await GmailLayoutChecks.Run(store, host, Check);
                 if (args.Length == 2 && args[1] == "--gmail-only") { result = 0; return; }
                 if (args.Length == 1 || args[1] == "--render-only") await CloudChecks.Run(store, host, window, Check);
                 if (args.Length == 1 || args[1] == "--render-only") await NativeCloudChecks.Run(store, host, window, Check);

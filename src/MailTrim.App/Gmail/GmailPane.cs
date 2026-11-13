@@ -1,6 +1,8 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Automation;
+using System.Windows.Data;
 using System.Windows.Media;
 using System.Windows.Threading;
 using MailTrim.Core;
@@ -24,17 +26,24 @@ public sealed class GmailPane : Grid, IDisposable
     private readonly CancellationTokenSource lifetime = new();
     private readonly SemaphoreSlim operation = new(1);
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromMinutes(2) };
-    private readonly ListBox folders = new() { DisplayMemberPath = "Name", BorderThickness = new Thickness(0) };
-    private readonly ListBox messages = new() { BorderThickness = new Thickness(0), HorizontalContentAlignment = HorizontalAlignment.Stretch };
-    private readonly TextBox search = new() { MinWidth = 100, Margin = new Thickness(4), ToolTip = "Поиск Gmail, например is:unread или from:адрес" };
-    private readonly TextBlock note = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(6), FontSize = 12 };
-    private readonly StackPanel body = new() { Margin = new Thickness(20,12,20,20) };
-    private readonly StackPanel actions = new() { Orientation = Orientation.Horizontal };
+    private readonly ListBox folders = new() { Name = "GmailFolders" };
+    private readonly ListBox messages = new() { Name = "GmailMessages" };
+    private readonly TextBox search = new() { Name = "GmailSearch", MinWidth = 60, Margin = new Thickness(0,0,4,0), Tag = "Поиск в Gmail", ToolTip = "Поиск Gmail, например is:unread или from:адрес" };
+    private readonly TextBlock note = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(10,8,10,10), FontSize = 11 };
+    private readonly StackPanel body = new() { Name = "GmailReadingBody", Margin = new Thickness(24,24,24,24), MaxWidth = GmailReadingView.MaxContentWidth, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly WrapPanel actions = new() { Margin = new Thickness(8,5,8,5) };
     private readonly DockPanel sidebar = new();
     private readonly DockPanel list = new();
     private readonly DockPanel content = new();
     private readonly GridSplitter splitter = new() { Width = 5, HorizontalAlignment = HorizontalAlignment.Stretch, ResizeDirection = GridResizeDirection.Columns, ResizeBehavior = GridResizeBehavior.PreviousAndNext };
-    private readonly Button more;
+    private readonly Button more = new() { Content = "Показать ещё", Margin = new Thickness(10,4,10,4) };
+    private readonly TextBlock folderTitle = new() { Name = "GmailFolderTitle", Text = "Входящие", FontSize = 18, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis };
+    private readonly TextBlock accountCaption = new() { Name = "GmailAccountCaption", FontSize = 11, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0,4,0,0) };
+    private readonly ScrollViewer messageScroll = new() { Name = "GmailMessageScroll", VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+    private bool customListWidth;
+    public static readonly DependencyProperty FoldersCollapsedProperty = DependencyProperty.Register(nameof(FoldersCollapsed),typeof(bool),typeof(GmailPane),new PropertyMetadata(false,(owner,_) => ((GmailPane)owner).ApplyFolderLayout()));
+    public bool FoldersCollapsed { get => (bool)GetValue(FoldersCollapsedProperty); private set => SetValue(FoldersCollapsedProperty,value); }
+    public void ToggleFolders() => FoldersCollapsed = !FoldersCollapsed;
     private readonly Dictionary<string, GmailMessage> prepared = [];
     private readonly Dictionary<string, GmailCachedPage> pages = [];
     private string address = "";
@@ -59,30 +68,7 @@ public sealed class GmailPane : Grid, IDisposable
         this.store = store; this.profile = profile; this.status = status; this.notify = notify;
         vault = new(store.Root, profile.Id); oauth = testOAuth ?? new(vault); api = new(oauth.AccessToken,testHandler);
         registration = registrationStore ?? new(store.Root);
-        SetResourceReference(BackgroundProperty,"Panel");
-        ColumnDefinitions.Add(new() { Width = new GridLength(170) });
-        ColumnDefinitions.Add(new() { Width = new GridLength(320) });
-        ColumnDefinitions.Add(new() { Width = new GridLength(5) });
-        ColumnDefinitions.Add(new() { Width = new GridLength(1,GridUnitType.Star) });
-        Children.Add(sidebar);
-        var bottom = new StackPanel(); DockPanel.SetDock(bottom,Dock.Bottom); sidebar.Children.Add(bottom);
-        bottom.Children.Add(Button("⚙", () => { (Window.GetWindow(this) as MainWindow)?.ShowSettings(); return Task.CompletedTask; }));
-        bottom.Children.Add(Button("Аккаунт Google", () => { if (!HasDraft) ShowSetup(); else note.Text = "Сначала отправьте или отмените открытый черновик."; return Task.CompletedTask; }));
-        bottom.Children.Add(Button("⇔", () => { ColumnDefinitions[0].Width = new GridLength(ColumnDefinitions[0].Width.Value == 170 ? 40 : 170); return Task.CompletedTask; }));
-        var compose = Button("Написать", () => { Compose(null); return Task.CompletedTask; }); DockPanel.SetDock(compose,Dock.Top); sidebar.Children.Add(compose);
-        sidebar.Children.Add(folders);
-        SetColumn(list,1); Children.Add(list);
-        var tools = new DockPanel(); DockPanel.SetDock(tools,Dock.Top); list.Children.Add(tools);
-        var find = Button("Найти", () => ChangeFolder(label,search.Text.Trim())); DockPanel.SetDock(find,Dock.Right); tools.Children.Add(find); tools.Children.Add(search);
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal }; DockPanel.SetDock(buttons,Dock.Top); list.Children.Add(buttons);
-        buttons.Children.Add(Button("Обновить", Refresh)); more = Button("Ещё", LoadMore); buttons.Children.Add(more);
-        DockPanel.SetDock(note,Dock.Top); list.Children.Add(note); list.Children.Add(messages);
-        SetColumn(splitter,2); Children.Add(splitter);
-        SetColumn(content,3); Children.Add(content); DockPanel.SetDock(actions,Dock.Top); content.Children.Add(actions);
-        content.Children.Add(new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
-        var template = new DataTemplate(typeof(GmailMessage));
-        var text = new FrameworkElementFactory(typeof(TextBlock)); text.SetValue(TextBlock.TextWrappingProperty,TextWrapping.Wrap); text.SetValue(FrameworkElement.MarginProperty,new Thickness(6)); text.SetBinding(TextBlock.TextProperty,new System.Windows.Data.Binding());
-        template.VisualTree = text; messages.ItemTemplate = template;
+        BuildMailboxLayout();
         folders.SelectionChanged += async (_,_) => { if (!selecting && folders.SelectedItem is GmailLabel folder) await Execute(() => ChangeFolder(folder.Id,"")); };
         messages.SelectionChanged += async (_,_) =>
         {
@@ -108,8 +94,81 @@ public sealed class GmailPane : Grid, IDisposable
     }
     private Button Button(string title, Func<Task> action)
     {
-        var button = new Button { Content = title, Margin = new Thickness(3), Padding = new Thickness(7,5,7,5) };
+        var button = new Button { Content = title, ToolTip = title };
+        button.SetResourceReference(StyleProperty,"NativeToolbarButton");
         button.Click += async (_,_) => await Execute(action); return button;
+    }
+    private void BuildMailboxLayout()
+    {
+        Resources.MergedDictionaries.Add(new ResourceDictionary { Source = new Uri("/MailTrim;component/Gmail/GmailStyles.xaml",UriKind.Relative) });
+        SetResourceReference(BackgroundProperty,"Surface");
+        ColumnDefinitions.Add(new() { Width = new GridLength(196) });
+        ColumnDefinitions.Add(new() { Width = new GridLength(340), MinWidth = 240, MaxWidth = 480 });
+        ColumnDefinitions.Add(new() { Width = new GridLength(5) });
+        ColumnDefinitions.Add(new() { Width = new GridLength(1,GridUnitType.Star), MinWidth = 260 });
+        sidebar.SetResourceReference(BackgroundProperty,"Surface"); Children.Add(sidebar);
+        var sidebarHeader = new Grid { Height = 48 };
+        var toggle = Button("\uE700", () => { ToggleFolders(); return Task.CompletedTask; });
+        toggle.Name = "FolderToggleButton"; toggle.FontFamily = new FontFamily("Segoe MDL2 Assets"); toggle.FontSize = 16;
+        toggle.Width = toggle.Height = 34; toggle.Margin = new Thickness(7,7,0,7); toggle.HorizontalAlignment = HorizontalAlignment.Left;
+        toggle.ToolTip = "Свернуть или развернуть папки"; AutomationProperties.SetName(toggle,"Свернуть или развернуть папки");
+        sidebarHeader.Children.Add(toggle);
+        var brand = new TextBlock { Text = "Gmail", FontSize = 16, FontWeight = FontWeights.SemiBold, Margin = new Thickness(52,0,8,0), VerticalAlignment = VerticalAlignment.Center };
+        brand.SetResourceReference(TextBlock.ForegroundProperty,"Ink");
+        var brandVisibility = new Style(typeof(TextBlock)); var hideBrand = new DataTrigger { Binding = new Binding(nameof(FoldersCollapsed)) { Source = this }, Value = true };
+        hideBrand.Setters.Add(new Setter(VisibilityProperty,Visibility.Collapsed)); brandVisibility.Triggers.Add(hideBrand); brand.Style = brandVisibility;
+        sidebarHeader.Children.Add(brand); DockPanel.SetDock(sidebarHeader,Dock.Top); sidebar.Children.Add(sidebarHeader);
+        var compose = SideButton("Написать","\uE70F", () => { Compose(null); return Task.CompletedTask; }); compose.Name = "GmailComposeButton";
+        compose.Height = 40; compose.FontWeight = FontWeights.SemiBold; compose.SetResourceReference(BackgroundProperty,"ServiceSelected"); compose.SetResourceReference(Control.ForegroundProperty,"Accent");
+        AutomationProperties.SetName(compose,"Написать письмо"); DockPanel.SetDock(compose,Dock.Top); sidebar.Children.Add(compose);
+        var bottom = new StackPanel { Margin = new Thickness(0,8,0,8) }; DockPanel.SetDock(bottom,Dock.Bottom); sidebar.Children.Add(bottom);
+        bottom.Children.Add(SideButton("Настройки","\uE713", () => { (Window.GetWindow(this) as MainWindow)?.ShowSettings(); return Task.CompletedTask; }));
+        bottom.Children.Add(SideButton("Аккаунт Google","\uE77B", () => { if (!HasDraft) ShowSetup(); else note.Text = "Сначала отправьте или отмените открытый черновик."; return Task.CompletedTask; }));
+        folders.SetResourceReference(StyleProperty,"NativeList"); folders.SetResourceReference(BackgroundProperty,"Surface");
+        folders.ItemTemplate = (DataTemplate)Resources["GmailFolderTemplate"]; folders.ItemContainerStyle = (Style)Resources["GmailFolderItem"];
+        folders.GroupStyle.Add(new GroupStyle { HeaderTemplate = (DataTemplate)Resources["GmailFolderGroupTemplate"] });
+        VirtualizingPanel.SetIsVirtualizingWhenGrouping(folders,true); sidebar.Children.Add(folders);
+        messages.SetResourceReference(StyleProperty,"NativeList"); messages.ItemTemplate = (DataTemplate)Resources["GmailMessageTemplate"]; messages.ItemContainerStyle = (Style)Resources["GmailMessageItem"];
+        list.SetResourceReference(BackgroundProperty,"Panel"); SetColumn(list,1); Children.Add(list);
+        var listHeader = new DockPanel { Margin = new Thickness(13,14,10,10) };
+        var refresh = Button("\uE72C",Refresh); refresh.FontFamily = new FontFamily("Segoe MDL2 Assets"); refresh.Width = 32; refresh.ToolTip = "Обновить список"; AutomationProperties.SetName(refresh,"Обновить список");
+        DockPanel.SetDock(refresh,Dock.Right); listHeader.Children.Add(refresh);
+        var listHeading = new StackPanel(); folderTitle.SetResourceReference(TextBlock.ForegroundProperty,"Ink"); accountCaption.SetResourceReference(TextBlock.ForegroundProperty,"Muted");
+        listHeading.Children.Add(folderTitle); listHeading.Children.Add(accountCaption); listHeader.Children.Add(listHeading);
+        DockPanel.SetDock(listHeader,Dock.Top); list.Children.Add(listHeader);
+        var tools = new DockPanel { Margin = new Thickness(10,0,9,9) };
+        var find = Button("\uE721", () => ChangeFolder(label,search.Text.Trim())); find.FontFamily = new FontFamily("Segoe MDL2 Assets"); find.Width = 32; find.ToolTip = "Найти письма"; AutomationProperties.SetName(find,"Найти письма");
+        DockPanel.SetDock(find,Dock.Right); tools.Children.Add(find); search.SetResourceReference(StyleProperty,"NativeSearchBox"); AutomationProperties.SetName(search,"Поиск в Gmail"); tools.Children.Add(search);
+        DockPanel.SetDock(tools,Dock.Top); list.Children.Add(tools);
+        var footer = new StackPanel(); more.SetResourceReference(StyleProperty,"NativeToolbarButton"); more.Click += async (_,_) => await Execute(LoadMore); more.Visibility = Visibility.Collapsed;
+        footer.Children.Add(more); note.SetResourceReference(TextBlock.ForegroundProperty,"Muted"); footer.Children.Add(note); DockPanel.SetDock(footer,Dock.Bottom); list.Children.Add(footer); list.Children.Add(messages);
+        splitter.SetResourceReference(BackgroundProperty,"Line"); splitter.DragCompleted += (_,_) => customListWidth = true; SetColumn(splitter,2); Children.Add(splitter);
+        content.SetResourceReference(BackgroundProperty,"Panel"); SetColumn(content,3); Children.Add(content);
+        var toolbar = new Border { Child = actions, BorderThickness = new Thickness(0,0,0,1) }; toolbar.SetResourceReference(Border.BorderBrushProperty,"Line");
+        DockPanel.SetDock(toolbar,Dock.Top); content.Children.Add(toolbar); messageScroll.Content = body; content.Children.Add(messageScroll);
+        SizeChanged += (_,_) => { if (!customListWidth) ColumnDefinitions[1].Width = new GridLength(ActualWidth >= 2200 ? 420 : ActualWidth >= 1500 ? 380 : ActualWidth < 1050 ? 300 : 340); };
+        UpdateHeading();
+    }
+    private Button SideButton(string caption, string icon, Func<Task> action)
+    {
+        var button = Button(caption,action); button.Tag = icon; button.SetResourceReference(StyleProperty,"GmailSideButton"); return button;
+    }
+    private void ApplyFolderLayout()
+    {
+        if (ColumnDefinitions.Count > 0) ColumnDefinitions[0].Width = new GridLength(FoldersCollapsed ? 48 : 196);
+    }
+    private void UpdateHeading()
+    {
+        var folder = (folders.ItemsSource as IEnumerable<GmailLabel>)?.FirstOrDefault(item => item.Id == label);
+        folderTitle.Text = query.Length > 0 ? "Результаты поиска" : folder is null ? "Входящие" : GmailDisplayConverter.FolderName(folder);
+        accountCaption.Text = address.Length == 0 ? profile.Name : address; accountCaption.ToolTip = accountCaption.Text;
+    }
+    private void ShowEmptyMessage(string heading = "Выберите письмо", string text = "Отправитель, текст и изображения появятся здесь.")
+    {
+        if (HasDraft || showingAccount) return;
+        body.Children.Clear(); actions.Children.Clear();
+        var title = new TextBlock { Text = heading, Margin = new Thickness(0,24,0,10) }; title.SetResourceReference(StyleProperty,"NativeTitle"); body.Children.Add(title);
+        var hint = new TextBlock { Text = text }; hint.SetResourceReference(StyleProperty,"NativeMetadata"); body.Children.Add(hint);
     }
     private async Task Execute(Func<Task> action, bool background = false)
     {
@@ -161,7 +220,10 @@ public sealed class GmailPane : Grid, IDisposable
         try
         {
             folders.ItemsSource = new[] { new GmailLabel("INBOX","Входящие"), new GmailLabel("","Все письма"), new GmailLabel("STARRED","Помеченные"), new GmailLabel("SENT","Отправленные"), new GmailLabel("DRAFT","Черновики"), new GmailLabel("SPAM","Спам"), new GmailLabel("TRASH","Корзина") }.Concat(custom.Where(l => l.Id.StartsWith("Label_",StringComparison.Ordinal)).OrderBy(l => l.Name)).ToArray();
+            var groups = CollectionViewSource.GetDefaultView(folders.ItemsSource).GroupDescriptions;
+            groups?.Clear(); groups?.Add(new PropertyGroupDescription(nameof(GmailLabel.Id),new GmailDisplayConverter { Kind = "FolderGroup" }));
             folders.SelectedItem = ((IEnumerable<GmailLabel>)folders.ItemsSource).FirstOrDefault(l => l.Id == label);
+            UpdateHeading();
         }
         finally { selecting = false; }
     }
@@ -173,6 +235,8 @@ public sealed class GmailPane : Grid, IDisposable
         showingAccount = value;
         sidebar.Visibility = list.Visibility = splitter.Visibility = value ? Visibility.Collapsed : Visibility.Visible;
         SetColumn(content,value ? 0 : 3); SetColumnSpan(content,value ? 4 : 1);
+        body.MaxWidth = value ? double.PositiveInfinity : GmailReadingView.MaxContentWidth;
+        body.HorizontalAlignment = value ? HorizontalAlignment.Stretch : HorizontalAlignment.Left;
     }
     private void ShowMailbox()
     {
@@ -189,6 +253,7 @@ public sealed class GmailPane : Grid, IDisposable
     private void ShowSetup()
     {
         if (disposed) return;
+        messageScroll.ScrollToTop();
         AccountLayout(true);
         body.Children.Clear(); actions.Children.Clear();
         var panel = new StackPanel { MaxWidth = 500, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(8,32,8,8) };
@@ -250,13 +315,13 @@ public sealed class GmailPane : Grid, IDisposable
         prepared.Clear(); pages.Clear(); selected = null; inboxHead = null; label = "INBOX"; query = "";
         try { address = await api.Address(lifetime.Token); await LoadFolders(); await Refresh(); await CheckStatus(); }
         catch { if (!disposed) ShowSetup(); throw; }
-        body.Children.Clear(); body.Children.Add(new TextBlock { Text = "Gmail подключён. Выберите письмо в списке.", TextWrapping = TextWrapping.Wrap });
+        ShowEmptyMessage("Gmail подключён","Выберите письмо в списке слева.");
         if (active && Window.GetWindow(this) is MainWindow window) window.RestoreWindow();
     }
     private void ShowCached()
     {
         if (query.Length == 0 && pages.TryGetValue(label,out var cached))
-        { SetMessages(cached.Page.Messages); next = cached.Page.NextPageToken; more.IsEnabled = next is not null; note.Text = $"Локальная копия · проверено {cached.CheckedAt.LocalDateTime:g}. Обновляется…"; }
+        { SetMessages(cached.Page.Messages); next = cached.Page.NextPageToken; UpdatePagination(); note.Text = $"Локальная копия · проверено {cached.CheckedAt.LocalDateTime:g}. Обновляется…"; }
     }
     private void SetMessages(IEnumerable<GmailMessage> list)
     {
@@ -273,8 +338,10 @@ public sealed class GmailPane : Grid, IDisposable
             finally { selecting = false; } return;
         }
         label = folder; query = find; search.Text = find; selected = null; imageRender?.Cancel(); body.Children.Clear(); actions.Children.Clear(); messages.ItemsSource = null; next = null;
+        UpdateHeading(); ShowEmptyMessage();
         ShowCached(); await Refresh();
     }
+    private void UpdatePagination() { more.IsEnabled = next is not null; more.Visibility = next is null ? Visibility.Collapsed : Visibility.Visible; }
     public Task Refresh() => RefreshPage(false);
     private Task LoadMore() => RefreshPage(true);
     private async Task RefreshPage(bool append)
@@ -286,10 +353,11 @@ public sealed class GmailPane : Grid, IDisposable
         note.Text = append ? "Загрузка следующей страницы…" : "Обновление Gmail…";
         var page = await api.Page(label,query,append ? next : null,lifetime.Token);
         var list = append ? ((GmailMessage[]?)messages.ItemsSource ?? []).Concat(page.Messages).DistinctBy(m => m.Id).ToArray() : page.Messages;
-        SetMessages(list); next = page.NextPageToken; more.IsEnabled = next is not null;
+        SetMessages(list); next = page.NextPageToken; UpdatePagination(); UpdateHeading();
         if (!append && query.Length == 0) pages[label] = new(label,page,DateTimeOffset.Now);
         foreach (var message in page.Messages) if (prepared.TryGetValue(message.Id,out var old)) prepared[message.Id] = old with { Labels = message.Labels };
         SaveCache(); note.Text = $"Писем: {list.Length} · новые сверху · проверено {DateTime.Now:t}";
+        if (selected is null) ShowEmptyMessage(list.Length == 0 ? "Писем нет" : "Выберите письмо",list.Length == 0 ? "В этой папке или по этому запросу писем пока не найдено." : "Отправитель, текст и изображения появятся здесь.");
         // API reads do not mark unread mail as read. Keep the existing explicit preparation preference.
         if (store.Settings.AutomaticMailboxCache && preparation.IsCompleted)
         {
@@ -321,17 +389,20 @@ public sealed class GmailPane : Grid, IDisposable
     private void SaveCache() => vault.Save("cache",new GmailCache(pages.Values.TakeLast(40).ToArray(),prepared.Values.ToArray(),address));
     private async Task Open(GmailMessage message)
     {
+        if (selected?.Id != message.Id) messageScroll.ScrollToTop();
         selected = message;
         if (prepared.TryGetValue(message.Id,out var cached)) { selected = cached with { Labels = message.Labels }; Render(selected); }
         else
         {
             body.Children.Clear(); actions.Children.Clear();
-            body.Children.Add(new TextBlock { Text = message.Subject, FontSize = 24, TextWrapping = TextWrapping.Wrap });
-            body.Children.Add(new TextBlock { Text = message.Preview, TextWrapping = TextWrapping.Wrap });
-            body.Children.Add(new TextBlock { Text = "Загрузка полного письма…", Margin = new Thickness(0,12,0,0) });
+            body.Children.Add(GmailReadingView.CreateHeader(message));
+            body.Children.Add(GmailReadingView.CreateBodyText(message.Preview));
+            var loading = new TextBlock { Text = "Загрузка полного письма…" }; loading.SetResourceReference(StyleProperty,"NativeMetadata"); body.Children.Add(loading);
             actions.Children.Add(Button("Открыть Gmail в браузере", () => { OpenBrowser(message); return Task.CompletedTask; }));
         }
-        var ready = await api.Message(message.Id,lifetime.Token); selected = ready; Remember(ready); Render(ready);
+        var ready = await api.Message(message.Id,lifetime.Token); selected = ready; Remember(ready);
+        if (messages.ItemsSource is GmailMessage[] current) SetMessages(current.Select(item => item.Id == ready.Id ? ready : item));
+        Render(ready);
         // Merely preparing/fetching a message is read-only; the user controls its read status.
     }
     private void Render(GmailMessage message)
@@ -342,9 +413,12 @@ public sealed class GmailPane : Grid, IDisposable
         actions.Children.Add(Button(message.Unread ? "Прочитано" : "Не прочитано", async () => { await api.Modify(message.Id,message.Unread ? [] : ["UNREAD"],message.Unread ? ["UNREAD"] : [],lifetime.Token); prepared.Remove(message.Id); await Open(message); await CheckStatus(); }));
         actions.Children.Add(Button("В архив", async () => { await api.Modify(message.Id,[],["INBOX"],lifetime.Token); await Refresh(); await CheckStatus(); }));
         actions.Children.Add(Button("В корзину", async () => { if (MessageBox.Show(Window.GetWindow(this),"Переместить письмо в корзину Gmail?","Gmail",MessageBoxButton.YesNo) == MessageBoxResult.Yes) { await api.Trash(message.Id,lifetime.Token); prepared.Remove(message.Id); selected = null; body.Children.Clear(); actions.Children.Clear(); await Refresh(); await CheckStatus(); } }));
-        body.Children.Add(new TextBlock { Text = message.Subject, FontSize = 24, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0,0,0,10) });
-        body.Children.Add(new TextBlock { Text = message.From + " · " + message.ReceivedAt.LocalDateTime.ToString("g"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0,0,0,12) });
-        body.Children.Add(new TextBox { Text = message.Text.Length == 0 ? "Текст отсутствует. Проверьте вложения или откройте письмо в Gmail." : message.Text, IsReadOnly = true, TextWrapping = TextWrapping.Wrap, BorderThickness = new Thickness(0), Background = Brushes.Transparent, Padding = new Thickness(0), Margin = new Thickness(0,0,0,12) });
+        body.Children.Add(GmailReadingView.CreateHeader(message));
+        body.Children.Add(GmailReadingView.CreateBodyText(message.Text.Length == 0 ? "Текст отсутствует. Проверьте вложения или откройте письмо в Gmail." : message.Text));
+        if (message.Images.Length > 0)
+        {
+            var imageHeading = new TextBlock { Text = "Изображения из письма", Margin = new Thickness(0,8,0,8) }; imageHeading.SetResourceReference(StyleProperty,"NativeMetadata"); body.Children.Add(imageHeading);
+        }
         int auto = 0;
         foreach (var url in message.Images)
         {
@@ -353,7 +427,7 @@ public sealed class GmailPane : Grid, IDisposable
             async Task LoadImage()
             {
                 imageButton.IsEnabled = false;
-                try { var bitmap = await images.Load(new Uri(url),token); if (!token.IsCancellationRequested) { target.Children.Clear(); target.Children.Add(new Image { Source = bitmap, Stretch = Stretch.Uniform, MaxHeight = 2000, HorizontalAlignment = HorizontalAlignment.Left }); } }
+                try { var bitmap = await images.Load(new Uri(url),token); if (!token.IsCancellationRequested) { target.Children.Clear(); target.Children.Add(GmailReadingView.CreateImage(bitmap)); } }
                 catch { if (!token.IsCancellationRequested) { imageButton.IsEnabled = true; imageButton.Content = "Повторить загрузку изображения"; } }
             }
             imageButton.Click += async (_,_) => await LoadImage();
@@ -372,6 +446,7 @@ public sealed class GmailPane : Grid, IDisposable
     private void Compose(GmailMessage? reply)
     {
         if (!oauth.Connected || HasDraft) return;
+        messageScroll.ScrollToTop();
         imageRender?.Cancel(); body.Children.Clear(); actions.Children.Clear(); HasDraft = true;
         var to = new TextBox { Text = reply is null ? "" : reply.ReplyTo.Length > 0 ? reply.ReplyTo : reply.From, Margin = new Thickness(0,4,0,10) };
         var subject = new TextBox { Text = reply is null ? "" : reply.Subject.StartsWith("Re:",StringComparison.OrdinalIgnoreCase) ? reply.Subject : "Re: " + reply.Subject, Margin = new Thickness(0,4,0,10), MaxLength = 500 };

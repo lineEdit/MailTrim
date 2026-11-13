@@ -101,6 +101,7 @@ public static class CosmeticScript
           const promos = new Set();
           const promoIslands = new Map();
           const storeTitle = /^Актуальная\s*версия\s*Почты\s*в\s*RuStore$/iu;
+          const maxTitle = /^Важные\s*уведомления\s*от\s*Mail\s*теперь\s*в\s*(?:MAX|МАХ)$/iu;
           // Mail campaigns use both "erid: TOKEN" and "erid TOKEN" disclosures.
           const promoDisclosure = /\berid(?:\s*[:=]\s*|\s+)[a-z0-9]{5,}\b/iu;
           const promoText = node => (node.textContent || '').replace(/[\u200b-\u200d\ufeff]/g, '').trim();
@@ -345,7 +346,20 @@ public static class CosmeticScript
               if (card) hide(card);
             }
           };
-          const dismissStorePromo = () => {
+          const isBottomLeftCard = card => {
+            const bounds = card.getBoundingClientRect();
+            if (bounds.width < 200 || bounds.width > 500 || bounds.height < 140 || bounds.height > 650) return false;
+            const nearEdge = distance => distance >= -64 && distance <= 96;
+            for (let node = card; node && !node.matches('body,html'); node = node.parentElement) {
+              const style = getComputedStyle(node);
+              if (style.position !== 'fixed') continue;
+              // Insets still identify the card while a slide-in transform moves its rectangle.
+              return (node === card && nearEdge(parseFloat(style.left)) && nearEdge(parseFloat(style.bottom)))
+                || (nearEdge(bounds.left) && nearEdge(innerHeight - bounds.bottom));
+            }
+            return false;
+          };
+          const dismissPromos = () => {
             const decoration = node => {
               if (node.matches(overlayProtected + ',[role="dialog"]') || node.querySelector(overlayProtected + ',[role="dialog"]')) return false;
               const text = promoText(node);
@@ -356,13 +370,21 @@ public static class CosmeticScript
                 || !promoText(control) && !!control.querySelector('svg') && !control.matches('a'));
             };
             for (const heading of document.querySelectorAll('h1,h2,h3,div,span')) {
-              if (heading.closest(protectedContent) || !(storeTitle.test(promoText(heading)) || promoDisclosure.test(promoText(heading)))) continue;
+              if (heading.closest(protectedContent)) continue;
+              const copy = promoText(heading);
+              const cornerPromo = maxTitle.test(copy);
+              if (!cornerPromo && !storeTitle.test(copy) && !promoDisclosure.test(copy)) continue;
+              if (cornerPromo && heading.closest(moduleProtected)) continue;
               for (let panel = heading, depth = 0; panel && depth < 12; panel = panel.parentElement, depth++) {
                 if (panel.matches('body,main,#app-canvas,[role="main"]') || panel.querySelector(overlayProtected + ',[role="dialog"]')) break;
                 const text = promoText(panel).replace(/\s+/g, ' ');
                 const r = panel.getBoundingClientRect();
                 if (text.length > 1500 || r.width > 650 || r.height > 850) break;
-                if (!isKnownPromo(panel) || r.width < 200 || r.height < 24) continue;
+                if (r.width < 200 || r.height < 24) continue;
+                if (cornerPromo) {
+                  if (!/сообщения о новых письмах|напоминания о поездках/iu.test(text)
+                      || ![...panel.querySelectorAll('button,a,[role="button"]')].some(e => /^Попробовать$/iu.test(promoText(e)))) continue;
+                } else if (!isKnownPromo(panel)) continue;
                 let root = panel;
                 // Close controls and a blank shade are decoration, not extra dialog
                 // content. Include every isolated wrapper so a white frame cannot remain.
@@ -372,6 +394,18 @@ public static class CosmeticScript
                   const ownText = [...node.childNodes].filter(child => child.nodeType === 3).map(child => child.textContent).join('').trim();
                   if (ownText && !closeLabel(ownText) || !siblings.every(decoration)) break;
                   root = node;
+                }
+                if (cornerPromo) {
+                  // Hide the card and its artwork without hiding a shared fixed portal.
+                  let card = null;
+                  for (let node = panel; node && root.contains(node); node = node.parentElement) {
+                    if (node.matches(moduleProtected) || node.querySelector(moduleProtected)) break;
+                    if (isBottomLeftCard(node)) card = node;
+                    if (node === root) break;
+                  }
+                  if (!card) continue;
+                  card.setAttribute('data-mailtrim-promo','true'); promos.add(card);
+                  break;
                 }
                 let frame = panel;
                 for (let node = panel.parentElement; node && root.contains(node); node = node.parentElement) {
@@ -420,7 +454,7 @@ public static class CosmeticScript
             promos.clear();
             if (compactLayout) restorePromoIslands();
             if (labeledAds) { hideTopPreloader(); hideLabeledAds(); }
-            if (compactLayout) dismissStorePromo();
+            if (compactLayout) dismissPromos();
           };
           const scan = () => {
             timer = null;
