@@ -238,6 +238,14 @@ public sealed class BrowserSession : IDisposable
         if (!popup) core.Settings.AreDefaultScriptDialogsEnabled = !SourceIsHidden(cloud);
         core.NavigationStarting += (_, e) =>
         {
+            // VK ID places the Mail login document in a cross-site frame. Balanced
+            // tracking prevention may reject the short-lived cookies used to return
+            // a successful QR confirmation to the outer VK ID flow. Relax it only
+            // for the exact allow-listed authentication origins and restore it as
+            // soon as Mail or Cloud becomes the top-level document again.
+            core.Profile.PreferredTrackingPreventionLevel = NavigationPolicy.IsAuthentication(e.Uri)
+                ? CoreWebView2TrackingPreventionLevel.None
+                : CoreWebView2TrackingPreventionLevel.Balanced;
             if (popupRoutePending) { e.Cancel = true; return; }
             if (provisionalPopup && NavigationPolicy.IsInternal(e.Uri))
             {

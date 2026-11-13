@@ -342,6 +342,8 @@ internal static class Program
                 a.View.CoreWebView2.NotificationReceived -= captureNotification;
                 await Navigate(a, "https://account.mail.ru/__mailtrim_fixture");
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('mailtrim-cosmetic-style') === null") == "true", "no cosmetics on login origin");
+                Check(a.View.CoreWebView2.Profile.PreferredTrackingPreventionLevel == CoreWebView2TrackingPreventionLevel.None,
+                    "authentication permits the cross-site cookies required by VK ID and QR confirmation");
                 var authResourceObserved = new TaskCompletionSource<bool>();
                 a.View.CoreWebView2.WebResourceRequested += (_, e) => { if (e.Request.Uri == "https://ad.mail.ru/auth-required") authResourceObserved.TrySetResult(e.Response?.StatusCode != 403); };
                 await a.View.CoreWebView2.ExecuteScriptAsync("fetch('https://ad.mail.ru/auth-required').catch(()=>{}); void 0");
@@ -356,6 +358,8 @@ internal static class Program
                 await a.ApplySettings().WaitAsync(TimeSpan.FromSeconds(15));
                 Console.WriteLine("Navigating with paused settings…");
                 await Navigate(a, "https://e.mail.ru/__mailtrim_fixture");
+                Check(a.View.CoreWebView2.Profile.PreferredTrackingPreventionLevel == CoreWebView2TrackingPreventionLevel.Balanced,
+                    "mail restores balanced tracking prevention after authentication");
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("getComputedStyle(document.querySelector('[data-testid=advertising]')).display") != "\"none\"", "pause restores hidden elements");
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("document.querySelectorAll('[data-mailtrim-ad]').length") == "0", "pause disables semantic ad cleanup");
                 await a.ClearData();
