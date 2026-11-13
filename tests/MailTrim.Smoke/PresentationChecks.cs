@@ -119,7 +119,8 @@ internal static class PresentationChecks
             paused=true;await session.ApplySettings();await Navigate("https://e.mail.ru/inbox/render-first");
             check(await core.ExecuteScriptAsync("document.getElementById('banner').getBoundingClientRect().height>0")=="true","pausing filters restores the original page without a waiting surface");
             session.SetActive(false);check(session.Surface.Visibility==Visibility.Collapsed,"inactive account hides its entire browser surface");
-            session.SetActive(true);check(session.View.Visibility==Visibility.Visible,"return to an account does not await readiness polling");
+            await session.BackgroundSuspension;check(session.View.CoreWebView2.IsSuspended,"inactive account releases WebView2 renderer resources");
+            session.SetActive(true);check(session.View.Visibility==Visibility.Visible&&!session.View.CoreWebView2.IsSuspended,"return to an account resumes its preserved WebView immediately");
             session.SetReadingOnly(true);check(session.View.Visibility==Visibility.Hidden,"native reading continues to collect with a hidden browser");
         }
         finally { host.Children.Remove(session.Surface); }

@@ -37,6 +37,10 @@ jobs:
           dotnet-version: '10.0.x'
           cache: true
           cache-dependency-path: src/MailTrim.App/packages.lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/MailTrim.Driver/go.mod
+          cache: false
       - name: Restore locked dependencies
         run: dotnet restore MailTrim.sln --locked-mode
       - name: Build Release

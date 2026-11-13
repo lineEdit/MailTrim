@@ -14,6 +14,16 @@ if (args.Length == 3 && args[0] == "--verify-package")
     var kind = Path.GetFileName(args[1]).EndsWith("-lite.zip", StringComparison.Ordinal) ? DistributionKind.Lite : DistributionKind.Standalone;
     if (Path.GetFileName(args[1]) != ReleasePackage.Name(Assembly.GetExecutingAssembly().GetName().Version!, kind))
         throw new InvalidDataException("Unexpected package name");
+    var driver = Path.Combine(packageRoot, "runtime", "MailTrim.Driver.exe");
+    if (!File.Exists(driver)) throw new InvalidDataException("Missing local data driver");
+    using (var broker = Process.Start(new ProcessStartInfo(driver) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true })!)
+    {
+        await broker.StandardInput.WriteLineAsync("{\"id\":1,\"op\":\"ping\"}"); broker.StandardInput.Close();
+        var line = await broker.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        using var reply = JsonDocument.Parse(line ?? throw new InvalidDataException("Data driver did not respond"));
+        if (!reply.RootElement.GetProperty("ok").GetBoolean()) throw new InvalidDataException("Data driver rejected health check");
+        await broker.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+    }
     using var configuration = JsonDocument.Parse(File.ReadAllText(Path.Combine(packageRoot, "MailTrim.runtimeconfig.json")));
     var requiresRuntime = configuration.RootElement.GetProperty("runtimeOptions").TryGetProperty("frameworks", out var frameworks);
     if (requiresRuntime != (kind == DistributionKind.Lite) || requiresRuntime && !frameworks.EnumerateArray().Any(f => f.GetProperty("name").GetString() == "Microsoft.WindowsDesktop.App"))

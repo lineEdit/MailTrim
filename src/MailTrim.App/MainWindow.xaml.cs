@@ -143,6 +143,7 @@ public partial class MainWindow : Window
         this.store = store;
         this.confirmReplyExit = confirmReplyExit ?? (message => MessageBox.Show(this, message, "Открыт ответ", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes);
         InitializeComponent(); ApplyTheme();
+        IsVisibleChanged += (_, _) => { foreach (var session in sessions.Values) session.SetHostVisible(IsVisible); };
         MailServiceHeader.CloudRequested += () => { if (Current is { CloudOpen: false }) _ = Run(() => OpenCloud()); };
         VersionLabel.Text = "MailTrim " + typeof(MainWindow).Assembly.GetName().Version!.ToString(3);
         Loaded += async (_, _) =>
@@ -296,7 +297,7 @@ public partial class MainWindow : Window
             catch { sessions.Remove(profile.Id); BrowserHost.Children.Remove(session.Surface); session.Dispose(); throw; }
         }
         session.SetReadingOnly(readerMode);
-        session.SetActive(true);
+        session.SetHostVisible(IsVisible); session.SetActive(true);
         ConnectionStatus.Text = profile.StatusText;
         if (readerMode && !session.CloudOpen) await OpenReader();
         UpdateWorkspace();

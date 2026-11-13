@@ -44,7 +44,7 @@ public partial class App : Application
             Shutdown(1);
         }
     }
-    protected override void OnExit(ExitEventArgs e) { activationWait?.Unregister(null); activation?.Dispose(); instance?.Dispose(); base.OnExit(e); }
+    protected override void OnExit(ExitEventArgs e) { MailDataBroker.Shared.Dispose(); activationWait?.Unregister(null); activation?.Dispose(); instance?.Dispose(); base.OnExit(e); }
 }
 
 

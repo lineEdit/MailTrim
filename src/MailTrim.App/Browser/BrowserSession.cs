@@ -23,6 +23,9 @@ public sealed class BrowserSession : IDisposable
     public ReaderDataService ReaderData => readerData ??= new ReaderDataService(this);
     public bool ReadingOnly { get; private set; }
     private bool active;
+    private bool hostVisible = true;
+    private int suspensionVersion;
+    public Task BackgroundSuspension { get; private set; } = Task.CompletedTask;
     public void SetReadingOnly(bool reading)
     {
         ReadingOnly = reading;
@@ -64,6 +67,54 @@ public sealed class BrowserSession : IDisposable
         this.active = active;
         UpdateSurfaces();
         foreach (var p in popups.ToArray()) { if (active) p.Window.Show(); else p.Window.Hide(); }
+        UpdateResourceState();
+    }
+
+    public void SetHostVisible(bool visible)
+    {
+        hostVisible = visible;
+        UpdateResourceState();
+    }
+
+    private void UpdateResourceState()
+    {
+        var version = ++suspensionVersion;
+        if (NeedsLiveWebView) ResumeWebViews();
+        else BackgroundSuspension = SuspendWebViews(version);
+    }
+
+    private bool NeedsLiveWebView => active && (hostVisible || store.Settings.UseSiteNotifications);
+
+    private void ResumeWebViews()
+    {
+        foreach (var core in WebViewCores())
+            if (core.IsSuspended) core.Resume();
+    }
+
+    private async Task SuspendWebViews(int version)
+    {
+        try
+        {
+            // Let WPF apply Collapsed to the native controllers before WebView2 checks visibility.
+            await owner.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ContextIdle);
+            if (disposed || NeedsLiveWebView || version != suspensionVersion) return;
+            foreach (var core in WebViewCores())
+            {
+                if (disposed || NeedsLiveWebView || version != suspensionVersion) return;
+                if (!core.IsSuspended) await core.TrySuspendAsync();
+                if (NeedsLiveWebView || version != suspensionVersion) { if (core.IsSuspended) core.Resume(); return; }
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.COMException)
+        {
+            // Suspension is an optimization. A navigating or closing view may reject it.
+        }
+    }
+
+    private IEnumerable<CoreWebView2> WebViewCores()
+    {
+        if (View.CoreWebView2 is { } mail) yield return mail;
+        if (CloudView?.CoreWebView2 is { } cloud) yield return cloud;
     }
 
     private void UpdateSurfaces()

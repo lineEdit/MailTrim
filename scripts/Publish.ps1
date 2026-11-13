@@ -32,9 +32,19 @@ try {
         $out = Join-Path $OutputRoot "MailTrim-$version-$Runtime$suffix"
         dotnet publish src/MailTrim.App/MailTrim.App.csproj -c Release -r $Runtime --self-contained $selfContained -p:PublishSingleFile=true -p:DebugType=embedded -p:RestoreLockedMode=true -o $out
         if ($LASTEXITCODE -ne 0) { throw 'Publish failed' }
+        $runtimeOut = Join-Path $out 'runtime'
+        New-Item -ItemType Directory -Path $runtimeOut -Force | Out-Null
+        Push-Location src/MailTrim.Driver
+        try { & go build -trimpath -ldflags '-s -w' -o (Join-Path $runtimeOut 'MailTrim.Driver.exe') .; if ($LASTEXITCODE -ne 0) { throw 'Go driver build failed' } }
+        finally { Pop-Location }
         $licenseOut = Join-Path $out 'licenses'
         New-Item -ItemType Directory -Path $licenseOut -Force | Out-Null
         Copy-Item LICENSE -Destination $licenseOut
+        $goRoot = (& go env GOROOT).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $goRoot 'LICENSE'))) { throw 'Go runtime license not found' }
+        $goLicenseOut = Join-Path $licenseOut 'Go'
+        New-Item -ItemType Directory -Path $goLicenseOut -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $goRoot 'LICENSE') -Destination (Join-Path $goLicenseOut 'LICENSE.txt')
         if (-not $lite) {
             $packData = & dotnet msbuild src/MailTrim.App/MailTrim.App.csproj -target:ResolveFrameworkReferences -property:RuntimeIdentifier=$Runtime -property:SelfContained=true -getItem:ResolvedRuntimePack -verbosity:quiet
             if ($LASTEXITCODE -ne 0) { throw 'Runtime license resolution failed' }
@@ -86,7 +96,7 @@ try {
 Запустите **MailTrim.exe** — это единственный запускаемый файл в этой папке.
 
 MailTrim.dll и MailTrim.runtimeconfig.json нужны для совместимости обновлений. Не удаляйте их.
-Папки rules, docs и licenses содержат правила, документацию и лицензии.
+Папки rules, runtime, docs и licenses содержат правила, локальный обработчик данных, документацию и лицензии.
 
 [Руководство пользователя](docs/USER-GUIDE.md) · [История изменений](docs/CHANGELOG.md)
 [Репозиторий](https://github.com/lineEdit/MailTrim)

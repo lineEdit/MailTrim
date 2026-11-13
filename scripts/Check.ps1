@@ -21,6 +21,9 @@ function Invoke-DotNet {
 
 Push-Location $repoRoot
 try {
+    Push-Location src/MailTrim.Driver
+    try { & go test ./...; if ($LASTEXITCODE -ne 0) { throw "Go driver checks failed with exit code $LASTEXITCODE" } }
+    finally { Pop-Location }
     if (-not $NoBuild) {
         Invoke-DotNet -Arguments @('restore', 'MailTrim.sln', '--locked-mode')
         Invoke-DotNet -Arguments @('build', 'MailTrim.sln', '-c', $Configuration, '--no-restore')
@@ -29,5 +32,5 @@ try {
     Invoke-DotNet -Arguments @('run', '--project', 'tests/MailTrim.Tests', '-c', $Configuration, '--no-build')
     Invoke-DotNet -Arguments @('run', '--project', 'tests/MailTrim.UpdateTests', '-c', $Configuration, '--no-build', '--', (Join-Path $ScratchRoot 'updates'))
     Invoke-DotNet -Arguments @('run', '--project', 'tests/MailTrim.Smoke', '-c', $Configuration, '--no-build', '--', (Join-Path $ScratchRoot 'webview'))
-    Write-Output "All three check suites passed. Test data: $ScratchRoot"
+    Write-Output "Go driver and all three application check suites passed. Test data: $ScratchRoot"
 } finally { Pop-Location }

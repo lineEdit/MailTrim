@@ -33,7 +33,7 @@ public sealed class ReaderSource(BrowserSession session)
             token.ThrowIfCancellationRequested();
             if (!NavigationPolicy.IsMail(session.View.CoreWebView2.Source)) throw new IOException("sign_in_required");
             var blocks = await Extract<List<ReaderBlock>>(ReaderScript.Body);
-            if (blocks?.Count > 0) return ReaderData.Clean(blocks);
+            if (blocks?.Count > 0) return await MailDataBroker.Shared.CleanBlocks(blocks, token);
             var group = await Extract<ReaderListSnapshot>(ReaderScript.GroupSnapshot);
             if (group is { Ready: true } && group.Letters.All(x => x.Url != letter.Url))
             {
@@ -42,7 +42,7 @@ public sealed class ReaderSource(BrowserSession session)
                 // Avoid mistaking an intermediate SPA render for the final category.
                 // An empty loading shell alone does not prove an empty category.
                 if (stableGroup >= 6 && (group.Letters.Count > 0 || i >= 15 && (letter.IsGroup || group.Empty || IsFolder(letter.Url))))
-                    throw new ReaderGroupOpened(letter, group.Letters.Select(ReaderData.Clean).OfType<ReaderLetter>().ToList());
+                    throw new ReaderGroupOpened(letter, await MailDataBroker.Shared.CleanLetters(group.Letters, token));
             }
             else { stableGroup = 0; groupSignature = null; }
             await Task.Delay(150, token);
@@ -112,7 +112,7 @@ public sealed class ReaderSource(BrowserSession session)
                 foreach (var extra in await Extract<List<string>>(Folders) ?? []) AddFolder(extra);
                 var rows = await Extract<List<ReaderLetter>>(ReaderScript.List) ?? [];
                 token.ThrowIfCancellationRequested();
-                var cleanRows = rows.Select(ReaderData.Clean).OfType<ReaderLetter>().Select(x => knownGroups.Contains(x.Url) ? x with { IsGroup = true } : x).ToArray();
+                var cleanRows = (await MailDataBroker.Shared.CleanLetters(rows, token)).Select(x => knownGroups.Contains(x.Url) ? x with { IsGroup = true } : x).ToArray();
                 bool headersChanged = false;
                 foreach (var row in cleanRows)
                 {

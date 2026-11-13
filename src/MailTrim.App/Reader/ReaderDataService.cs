@@ -90,7 +90,7 @@ public sealed class ReaderDataService : IDisposable
             var rows = snapshot?.Letters;
             if (rows?.Count > 0 || snapshot?.Ready == true && ++emptyReady >= 3)
             {
-                var clean = (rows ?? []).Select(ReaderData.Clean).OfType<ReaderLetter>().Select(Describe).ToList();
+                var clean = (await MailDataBroker.Shared.CleanLetters(rows, ct)).Select(Describe).ToList();
                 foreach (var letter in clean) session.Cache.RefreshMetadata(letter);
                 ct.ThrowIfCancellationRequested();
                 try { await Task.Run(() => session.Cache.SaveHeaders(clean, ct), ct); }
@@ -108,7 +108,7 @@ public sealed class ReaderDataService : IDisposable
         var uri = new Uri(session.View.CoreWebView2.Source);
         if (!NavigationPolicy.IsMail(uri.AbsoluteUri) || uri.GetLeftPart(UriPartial.Query).TrimEnd('/') != folder.TrimEnd('/')) return null;
         var snapshot = await source.Extract<ReaderListSnapshot>(ReaderScript.Snapshot);
-        return snapshot is { Ready: true } ? snapshot with { Letters = (snapshot.Letters ?? []).Select(ReaderData.Clean).OfType<ReaderLetter>().Select(Describe).ToList() } : null;
+        return snapshot is { Ready: true } ? snapshot with { Letters = (await MailDataBroker.Shared.CleanLetters(snapshot.Letters, ct)).Select(Describe).ToList() } : null;
     }, token);
     public Task<List<string>> Folders(CancellationToken token) => Enqueue(async ct =>
     {
@@ -128,7 +128,7 @@ public sealed class ReaderDataService : IDisposable
         letter = Describe(ReaderData.Clean(letter) ?? throw new IOException("mail_origin_required"));
         try
         {
-            var blocks = ReaderData.Clean(await ReadSource(letter, ct));
+            var blocks = await ReadSource(letter, ct);
             ct.ThrowIfCancellationRequested(); bool saved = true;
             try { session.Cache.Save(letter, blocks); }
             catch (Exception ex) when (ex is IOException or System.Security.Cryptography.CryptographicException or UnauthorizedAccessException) { saved = false; }
@@ -152,7 +152,7 @@ public sealed class ReaderDataService : IDisposable
         }
         return Enqueue(async ct =>
         {
-            var blocks = ReaderData.Clean(await ReadSource(letter, ct));
+            var blocks = await ReadSource(letter, ct);
             ct.ThrowIfCancellationRequested(); bool saved = true;
             try { session.Cache.Save(letter, blocks); }
             catch (Exception ex) when (ex is IOException or System.Security.Cryptography.CryptographicException or UnauthorizedAccessException) { saved = false; }
