@@ -65,9 +65,13 @@ public sealed class BrowserSession : IDisposable
     public void SetActive(bool active)
     {
         this.active = active;
+        // A suspended WebView2 must be resumed while its controller is still hidden.
+        // Making the WPF host visible first can leave the compositor showing a white
+        // surface even though CoreWebView2 reports that Resume() succeeded.
+        UpdateResourceState();
         UpdateSurfaces();
         foreach (var p in popups.ToArray()) { if (active) p.Window.Show(); else p.Window.Hide(); }
-        UpdateResourceState();
+        if (active) QueueResumeVerification(suspensionVersion);
     }
 
     public void SetHostVisible(bool visible)
@@ -89,6 +93,17 @@ public sealed class BrowserSession : IDisposable
     {
         foreach (var core in WebViewCores())
             if (core.IsSuspended) core.Resume();
+    }
+
+    private void QueueResumeVerification(int version)
+    {
+        _ = owner.Dispatcher.BeginInvoke(() =>
+        {
+            if (disposed || !NeedsLiveWebView || version != suspensionVersion) return;
+            ResumeWebViews();
+            View.InvalidateVisual();
+            CloudView?.InvalidateVisual();
+        }, System.Windows.Threading.DispatcherPriority.ContextIdle);
     }
 
     private async Task SuspendWebViews(int version)
@@ -270,6 +285,7 @@ public sealed class BrowserSession : IDisposable
             if (background || e.WebErrorStatus == CoreWebView2WebErrorStatus.OperationCanceled) return;
             status(e.IsSuccess ? $"Готово · заблокировано запросов: {blocked}" : "Страница не загрузилась. Проверьте сеть или временно отключите фильтры.");
             if (!e.IsSuccess) store.Log("navigation_failed");
+            else if (!popup && !cloud && NavigationPolicy.IsMail(core.Source)) _ = RecoverStalledMailRedirect(view, core.Source);
         };
         core.ServerCertificateErrorDetected += (_, e) => e.Action = CoreWebView2ServerCertificateErrorAction.Cancel;
         // Let WebView2 own notification display/click/close. Drop unsolicited origins,
@@ -364,6 +380,34 @@ public sealed class BrowserSession : IDisposable
         await SetScript(view);
         SetTheme(view);
     }
+
+    private async Task RecoverStalledMailRedirect(WebView2 view, string completedSource)
+    {
+        try
+        {
+            // An expired Mail.ru session can leave e.mail.ru on a visually empty
+            // document titled "Redirect" instead of continuing to the login page.
+            // Give the site's own redirect a chance first, then use the same official
+            // in-profile sign-in flow that the page was trying to reach.
+            await Task.Delay(1200);
+            if (disposed || view.CoreWebView2 is not { } core || core.Source != completedSource) return;
+            var json = await core.ExecuteScriptAsync("(() => ({Title:(document.title||'').trim(),HasMail:!!document.querySelector('.letter-list__react,.llct,.letter-list,.thread,.compose-app'),HasLogin:!!document.querySelector('input[type=password],form')}))()");
+            var snapshot = System.Text.Json.JsonSerializer.Deserialize<RedirectDocument>(json);
+            if (!IsStalledMailRedirect(snapshot?.Title, snapshot?.HasMail == true, snapshot?.HasLogin == true) || core.Source != completedSource) return;
+            status("Сессия Mail.ru истекла · открываю официальный вход…");
+            core.Navigate("https://account.mail.ru/login/?page=https%3A%2F%2Fe.mail.ru%2Finbox%2F");
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.COMException)
+        {
+            // A concurrent navigation or closed view makes recovery unnecessary.
+        }
+    }
+
+    private sealed record RedirectDocument(string Title, bool HasMail, bool HasLogin);
+    internal static bool IsStalledMailRedirect(string? title, bool hasMail, bool hasLogin) =>
+        !hasMail && !hasLogin && title is not null
+        && (title.Equals("Redirect", StringComparison.OrdinalIgnoreCase)
+            || title.Equals("Перенаправление", StringComparison.OrdinalIgnoreCase));
 
     private async Task SetScript(WebView2 view)
     {

@@ -18,6 +18,12 @@ internal static class PresentationChecks
     }
     public static async Task Run(LocalStore store, Grid host, Window window, Action<bool, string> check)
     {
+        var redirectClassifier = typeof(BrowserSession).GetMethod("IsStalledMailRedirect", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
+        bool Stalled(string title, bool hasMail, bool hasLogin) => (bool)redirectClassifier.Invoke(null, [title, hasMail, hasLogin])!;
+        check(Stalled("Перенаправление", false, false) && Stalled("Redirect", false, false),
+            "empty Mail.ru redirect documents are recognized for official sign-in recovery");
+        check(!Stalled("Входящие - Почта Mail", true, false) && !Stalled("Перенаправление", false, true),
+            "mail content and authentication forms are never replaced by redirect recovery");
         bool paused = false;
         using var session = new BrowserSession(store, window, _ => { }, () => paused, _ => { });
         host.Children.Add(session.Surface);

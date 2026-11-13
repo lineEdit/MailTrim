@@ -297,7 +297,10 @@ public partial class MainWindow : Window
             catch { sessions.Remove(profile.Id); BrowserHost.Children.Remove(session.Surface); session.Dispose(); throw; }
         }
         session.SetReadingOnly(readerMode);
-        session.SetHostVisible(IsVisible); session.SetActive(true);
+        // Mark a newly initialized session active before propagating window
+        // visibility. Otherwise an already visible window can start suspending the
+        // WebView in the small gap between Navigate() and activation.
+        session.SetActive(true); session.SetHostVisible(IsVisible);
         ConnectionStatus.Text = profile.StatusText;
         if (readerMode && !session.CloudOpen) await OpenReader();
         UpdateWorkspace();
