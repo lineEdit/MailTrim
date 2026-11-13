@@ -10,11 +10,16 @@ public sealed class ReaderSource(BrowserSession session)
     public static bool IsFolder(string url) => NavigationPolicy.IsMail(url) && Uri.TryCreate(url, UriKind.Absolute, out var uri)
         && uri.Query.Length == 0 && uri.Fragment.Length == 0
         && System.Text.RegularExpressions.Regex.IsMatch(uri.AbsolutePath, @"^/(inbox|sent|drafts|archive|spam|trash|\d+|folder/[^/]+)/?$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
-    public async Task<T?> Extract<T>(string script) => JsonSerializer.Deserialize<T>(await session.View.CoreWebView2.ExecuteScriptAsync(script), FilterRules.Json);
+    public async Task<T?> Extract<T>(string script) => JsonSerializer.Deserialize<T>(await session.ExecuteMailScript(script), FilterRules.Json);
     public async Task Navigate(string url, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         if (!NavigationPolicy.IsMail(url)) throw new IOException("mail_origin_required");
+        if (session.HasEmbeddedMailbox)
+        {
+            await session.NavigateEmbeddedMail(url, token);
+            return;
+        }
         var core = session.View.CoreWebView2;
         var ready = new TaskCompletionSource(); ulong? id = null;
         void Started(object? s, CoreWebView2NavigationStartingEventArgs e) => id = e.NavigationId;
@@ -31,7 +36,7 @@ public sealed class ReaderSource(BrowserSession session)
         for (var i = 0; i < 100; i++)
         {
             token.ThrowIfCancellationRequested();
-            if (!NavigationPolicy.IsMail(session.View.CoreWebView2.Source)) throw new IOException("sign_in_required");
+            if (!NavigationPolicy.IsMail(session.MailSource)) throw new IOException("sign_in_required");
             var blocks = await Extract<List<ReaderBlock>>(ReaderScript.Body);
             if (blocks?.Count > 0) return await MailDataBroker.Shared.CleanBlocks(blocks, token);
             var group = await Extract<ReaderListSnapshot>(ReaderScript.GroupSnapshot);
@@ -108,7 +113,7 @@ public sealed class ReaderSource(BrowserSession session)
             for (var page = 0; page < 10000; page++)
             {
                 await Task.Delay(700, token);
-                if (!NavigationPolicy.IsMail(session.View.CoreWebView2.Source)) throw new IOException("sign_in_required");
+                if (!NavigationPolicy.IsMail(session.MailSource)) throw new IOException("sign_in_required");
                 foreach (var extra in await Extract<List<string>>(Folders) ?? []) AddFolder(extra);
                 var rows = await Extract<List<ReaderLetter>>(ReaderScript.List) ?? [];
                 token.ThrowIfCancellationRequested();

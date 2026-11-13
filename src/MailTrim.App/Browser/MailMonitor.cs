@@ -8,7 +8,7 @@ using Microsoft.Web.WebView2.Wpf;
 
 namespace MailTrim.App;
 
-public sealed class MailMonitor(LocalStore store, Grid host, Action<int> notify, Func<bool> canCheck, Action<Guid, MailboxStatus> status) : IDisposable
+public sealed class MailMonitor(LocalStore store, Grid host, Action<int> notify, Func<bool> canCheck, Action<Guid, MailboxStatus> status, Func<Guid, bool>? canCheckProfile = null) : IDisposable
 {
     private readonly NewMailTracker tracker = new();
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(15) };
@@ -21,9 +21,10 @@ public sealed class MailMonitor(LocalStore store, Grid host, Action<int> notify,
         timer.Start();
     }
     public void RequestCheck() { if (!disposed && canCheck() && (running is null || running.IsCompleted)) running = Check(); }
+    internal void CancelCheck() => cancellation?.Cancel();
     public async Task StopAsync()
     {
-        cancellation?.Cancel();
+        CancelCheck();
         if (running is not null) await running;
     }
     private async Task Check()
@@ -35,6 +36,7 @@ public sealed class MailMonitor(LocalStore store, Grid host, Action<int> notify,
             foreach (var profile in store.Settings.Profiles.Where(p => p.Provider == MailProvider.MailRu).ToArray())
             {
                 token.ThrowIfCancellationRequested();
+                if (canCheckProfile?.Invoke(profile.Id) == false) continue;
                 status(profile.Id, new("Проверка…", null, null));
                 using var view = new WebView2 { Visibility = Visibility.Hidden };
                 host.Children.Add(view);
@@ -47,7 +49,12 @@ public sealed class MailMonitor(LocalStore store, Grid host, Action<int> notify,
                     core.Settings.AreHostObjectsAllowed = false; core.Settings.IsWebMessageEnabled = false;
                     core.Settings.IsPasswordAutosaveEnabled = false; core.Settings.IsGeneralAutofillEnabled = false;
                     core.Settings.AreDevToolsEnabled = false;
-                    core.NavigationStarting += (_, e) => e.Cancel = !NavigationPolicy.IsInternal(e.Uri);
+                    var needsSignIn = false;
+                    core.NavigationStarting += (_, e) =>
+                    {
+                        needsSignIn |= NavigationPolicy.IsAuthentication(e.Uri);
+                        e.Cancel = needsSignIn || !NavigationPolicy.IsInternal(e.Uri);
+                    };
                     core.NewWindowRequested += (_, e) => e.Handled = true;
                     core.PermissionRequested += (_, e) => { e.State = CoreWebView2PermissionState.Deny; e.SavesInProfile = false; };
                     core.NotificationReceived += (_, e) => e.Handled = true;
@@ -60,10 +67,14 @@ public sealed class MailMonitor(LocalStore store, Grid host, Action<int> notify,
                     for (var attempt = 0; attempt < 20; attempt++)
                     {
                         await Task.Delay(1000, token);
+                        if (needsSignIn)
+                        {
+                            status(profile.Id, new("Нужен вход", null, null));
+                            completed = true;
+                            break;
+                        }
                         // IDs only, never subjects, bodies, contacts or authentication data.
                         var urls = JsonSerializer.Deserialize<string[]>(await core.ExecuteScriptAsync("location.origin==='https://e.mail.ru' ? [...document.querySelectorAll('a.js-letter-list-item')].slice(0,100).map(a=>a.href) : []")) ?? [];
-                        if (Uri.TryCreate(core.Source, UriKind.Absolute, out var page) && NavigationPolicy.IsInternal(core.Source) && page.Host != "e.mail.ru")
-                        { status(profile.Id, new("Нужен вход", null, null)); completed = true; break; }
                         var snapshot = JsonSerializer.Deserialize<MailboxStatusScript.SnapshotResult>(await core.ExecuteScriptAsync(MailboxStatusScript.Snapshot), FilterRules.Json);
                         if (urls.Length == 0 && snapshot?.Ready != true) continue;
                         status(profile.Id, new("Проверено", snapshot?.Unread, DateTimeOffset.Now)); completed = true;

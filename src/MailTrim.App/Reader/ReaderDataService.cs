@@ -81,7 +81,7 @@ public sealed class ReaderDataService : IDisposable
         if (!IsFolder(folder)) throw new IOException("folder_required");
         if (refresh || more && (await source.Extract<List<ReaderLetter>>(ReaderScript.List))?.Count is not > 0)
             await source.Navigate(folder, ct);
-        if (more) await session.View.CoreWebView2.ExecuteScriptAsync($"document.querySelector('.ReactVirtualized__List')?.scrollTo(0,{offset})");
+        if (more) await session.ExecuteMailScript($"document.querySelector('.ReactVirtualized__List')?.scrollTo(0,{offset})");
         var emptyReady = 0;
         for (var n = 0; n < 20; n++)
         {
@@ -105,7 +105,7 @@ public sealed class ReaderDataService : IDisposable
     public Task<ReaderListSnapshot?> Snapshot(string folder, CancellationToken token) => Enqueue(async ct =>
     {
         ct.ThrowIfCancellationRequested();
-        var uri = new Uri(session.View.CoreWebView2.Source);
+        var uri = new Uri(session.MailSource);
         if (!NavigationPolicy.IsMail(uri.AbsoluteUri) || uri.GetLeftPart(UriPartial.Query).TrimEnd('/') != folder.TrimEnd('/')) return null;
         var snapshot = await source.Extract<ReaderListSnapshot>(ReaderScript.Snapshot);
         return snapshot is { Ready: true } ? snapshot with { Letters = (await MailDataBroker.Shared.CleanLetters(snapshot.Letters, ct)).Select(Describe).ToList() } : null;
@@ -164,6 +164,11 @@ public sealed class ReaderDataService : IDisposable
         if (Describe(letter).IsGroup) throw new IOException("message_required");
         await ReadSource(letter, ct); ct.ThrowIfCancellationRequested();
         return await source.Extract<string>(ReaderActionScript.Create(action, letter.Url));
+    }, token);
+    public Task<bool> Compose(CancellationToken token) => Enqueue(async ct =>
+    {
+        ct.ThrowIfCancellationRequested();
+        return await source.Extract<bool>(ReaderActionScript.Compose);
     }, token);
     public Task WaitForIdle(CancellationToken token) => Enqueue(_ => Task.FromResult(true), token);
     public Task<ReaderSource.BatchResult> CacheMailbox(Action<string> progress, Action<ReaderLetter> discovered, CancellationToken token,

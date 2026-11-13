@@ -86,13 +86,41 @@ public sealed class LocalStore
     }
     public void Log(string code)
     {
-        // Event codes only; never URLs, labels, addresses, titles, exception messages or stack traces.
         if (code.Any(c => !(char.IsAsciiLetterLower(c) || c == '_'))) return;
+        WriteEvent(code);
+    }
+
+    internal void LogBlockedSignInDestination(string destination, bool popup = false)
+    {
+        var scheme = "-";
+        var domain = "-";
+        if (Uri.TryCreate(destination, UriKind.Absolute, out var uri))
+        {
+            if (uri.Scheme.Length <= 32) scheme = uri.Scheme;
+            // DNS names only. Hostless schemes may carry arbitrary text in the rest of the URI.
+            if (uri.HostNameType == UriHostNameType.Dns)
+            {
+                try
+                {
+                    var host = uri.IdnHost;
+                    if (host.Length <= 253 && host.TrimEnd('.').Contains('.')
+                        && host.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-'))
+                        domain = host;
+                }
+                catch (UriFormatException) { }
+            }
+        }
+        var code = popup ? "mail_signin_popup_blocked" : "mail_signin_navigation_blocked";
+        WriteEvent($"{code} scheme={scheme} domain={domain}");
+    }
+
+    private void WriteEvent(string entry)
+    {
         try
         {
             var path = Path.Combine(Root, "events.log");
             if (File.Exists(path) && new FileInfo(path).Length > 128_000) File.Move(path, path + ".1", true);
-            File.AppendAllText(path, $"{DateTimeOffset.UtcNow:O} {code}\n");
+            File.AppendAllText(path, $"{DateTimeOffset.UtcNow:O} {entry}\n");
         }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }

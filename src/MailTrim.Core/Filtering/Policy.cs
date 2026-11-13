@@ -18,8 +18,10 @@ public static class NavigationPolicy
     public static bool IsCloud(string url) => Uri.TryCreate(url, UriKind.Absolute, out var u)
         && u.Scheme == "https" && u.IsDefaultPort && u.UserInfo.Length == 0 && u.IdnHost == "cloud.mail.ru";
     public static bool IsAuthentication(string url) => IsInternal(url) && !IsMail(url) && !IsCloud(url);
-    public static bool ShouldPromoteAuthenticationFrame(string topLevelUrl, string frameUrl) =>
-        IsAuthentication(topLevelUrl) && (IsMail(frameUrl) || IsCloud(frameUrl));
+    public static bool IsSignInRelay(string url) => Uri.TryCreate(url, UriKind.Absolute, out var u)
+        && u.Scheme == "https" && u.IsDefaultPort && u.UserInfo.Length == 0 && u.IdnHost == "app.mail.ru";
+    public static bool IsMailWorkspace(string url) => IsSignInRelay(url)
+        && new Uri(url).AbsolutePath.StartsWith("/mail/", StringComparison.Ordinal);
     public static bool HostMatches(string host, string domain) => host.Equals(domain, StringComparison.OrdinalIgnoreCase)
         || host.EndsWith("." + domain, StringComparison.OrdinalIgnoreCase);
 }
@@ -77,7 +79,8 @@ public static class CosmeticScript
         var selectors = enabled ? rules.HideSelectors.Concat(aggressive ? rules.AggressiveSelectors : []).ToArray() : [];
         return CloudCosmeticScript.Create(enabled) + "\n" + """
         (() => {
-          if (window.top !== window || location.origin !== 'https://e.mail.ru') return;
+          if (location.origin !== 'https://e.mail.ru' ||
+              (window.top !== window && (location.ancestorOrigins.length !== 1 || location.ancestorOrigins[0] !== 'https://app.mail.ru'))) return;
           window.__mailtrimCleanup?.();
           const selectors = __SELECTORS__;
           const labeledAds = __LABELED__;

@@ -50,7 +50,7 @@ public sealed class SettingsWindow : Window
         main.Children.Add(Label("Тема оболочки и предпочтение для сайта")); main.Children.Add(theme);
         main.Children.Add(Note("System — системная, Light — светлая, Dark — тёмная. Веб-почта может использовать свою настройку темы."));
         main.Children.Add(Label("Локальные данные"));
-        main.Children.Add(Note("Сессии хранятся в %LOCALAPPDATA%\\MailTrim\\Profiles. Журнал содержит только время и коды событий, без адресов, URL, заголовков и содержимого писем."));
+        main.Children.Add(Note("Сессии хранятся в %LOCALAPPDATA%\\MailTrim\\Profiles. Журнал содержит время и коды событий. Для заблокированного перехода при входе записываются схема и домен без полного URL."));
         tabs.Items.Add(new TabItem { Header = "Вид и фильтры", Content = new ScrollViewer { Content = main, VerticalScrollBarVisibility = ScrollBarVisibility.Auto } });
         var desktopPanel = new StackPanel { Margin = new Thickness(16) };
         desktopPanel.Children.Add(Label("Запуск и фоновая работа"));

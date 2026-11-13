@@ -68,7 +68,7 @@ public sealed class ReaderPane : Grid
         var header = new StackPanel(); DockPanel.SetDock(header, Dock.Top); panel.Children.Add(header);
         var back = new Button { Content = "← К чтению", HorizontalAlignment = HorizontalAlignment.Left };
         back.Click += async (_, _) => await ReturnToReading(); header.Children.Add(back);
-        header.Children.Add(new TextBlock { Text = "Ответ в Mail.ru. Проверьте получателя и отправьте штатной кнопкой сайта. Если редактор не открылся, нажмите «Ответить» ниже.", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(8) });
+        header.Children.Add(new TextBlock { Text = "Редактор Mail.ru. Отправьте письмо или сохраните черновик перед возвратом.", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(8) });
         parent.Children.Remove(session.Surface);
         panel.Children.Add(session.Surface); session.Surface.SetRequestedVisibility(Visibility.Visible);
         Children[0].IsEnabled = false; Children[1].Visibility = Visibility.Collapsed; folderPanel.IsEnabled = false;
@@ -109,6 +109,27 @@ public sealed class ReaderPane : Grid
         catch { notice.Text = "Не удалось открыть ответ. Проверьте вход в Mail.ru и повторите попытку."; }
         finally { working = loading = false; list.IsEnabled = true; }
     }
+    private async Task OpenCompose()
+    {
+        if (working || loading || IsReplyVisible || lifetime.IsCancellationRequested) return;
+        entryRefreshNeeded = false;
+        CancelPreparation();
+        listRefresh?.Cancel();
+        working = loading = true;
+        try
+        {
+            if (!await session.ReaderData.Compose(lifetime.Token))
+            {
+                notice.Text = "Кнопка «Написать» не найдена. Откройте оригинал сайта через меню ⋯.";
+                return;
+            }
+            lifetime.Token.ThrowIfCancellationRequested();
+            AttachReply();
+        }
+        catch (OperationCanceledException) { }
+        catch { notice.Text = "Не удалось открыть редактор Mail.ru."; }
+        finally { working = loading = false; }
+    }
     public async Task OpenOriginal()
     {
         if (openingOriginal || lifetime.IsCancellationRequested) return;
@@ -120,8 +141,11 @@ public sealed class ReaderPane : Grid
             // Cancelled navigation must stop before the visible original starts navigating.
             await session.ReaderData.WaitForIdle(lifetime.Token);
             lifetime.Token.ThrowIfCancellationRequested();
-            if (!session.ReaderReplyOpen && selectedLetter is { } letter && session.View.CoreWebView2.Source != letter.Url)
-                session.View.CoreWebView2.Navigate(letter.Url);
+            if (!session.ReaderReplyOpen && selectedLetter is { } letter && session.MailSource != letter.Url)
+            {
+                if (session.HasEmbeddedMailbox) await session.NavigateEmbeddedMail(letter.Url, lifetime.Token);
+                else session.View.CoreWebView2.Navigate(letter.Url);
+            }
             original();
         }
         catch (OperationCanceledException) { }
@@ -193,6 +217,12 @@ public sealed class ReaderPane : Grid
         var folderLabel = new TextBlock { Text = "ПАПКИ", FontSize = 11, Margin = new Thickness(4, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center };
         folderLabel.SetResourceReference(TextBlock.ForegroundProperty, "Muted"); folderHeading.Children.Add(folderLabel);
         DockPanel.SetDock(folderHeading, Dock.Top); folderPanel.Children.Add(folderHeading);
+        var compose = new Button { Content = "✎", ToolTip = "Написать письмо", Margin = new Thickness(5, 2, 5, 5), Padding = new Thickness(5) };
+        compose.SetResourceReference(BackgroundProperty, "ServiceSelected");
+        compose.SetResourceReference(Control.ForegroundProperty, "Accent");
+        System.Windows.Automation.AutomationProperties.SetName(compose, "Написать письмо");
+        compose.Click += async (_, _) => await OpenCompose();
+        DockPanel.SetDock(compose, Dock.Top); folderPanel.Children.Add(compose);
         var readerSettings = new Button { Name = "ReaderSettings", Content = "\uE713", FontFamily = new System.Windows.Media.FontFamily("Segoe MDL2 Assets"), FontSize = 18, Padding = new Thickness(7), ToolTip = "Настройки MailTrim", HorizontalAlignment = HorizontalAlignment.Left };
         readerSettings.Click += (_, _) => (Window.GetWindow(this) as MainWindow)?.ShowSettings();
         System.Windows.Automation.AutomationProperties.SetName(readerSettings, "Настройки MailTrim");
@@ -387,8 +417,11 @@ public sealed class ReaderPane : Grid
         foreach (var letter in saved) { session.ReaderData.RememberGroup(letter); AddLetter(letter); }
         SchedulePreparation();
         if (saved.Count > 0) { notice.Text = $"В кэше: {saved.Count}. Проверяю новые входящие…"; BackgroundRefresh = RefreshOnEntry(); return; }
-        await LoadList(true);
+        await LoadList(!CanReadCurrentFolder());
     }
+    private bool CanReadCurrentFolder() => session.HasEmbeddedMailbox
+        && Uri.TryCreate(session.MailSource, UriKind.Absolute, out var source)
+        && source.GetLeftPart(UriPartial.Path).TrimEnd('/') == folderUrl.TrimEnd('/');
     private async Task LiveLoop()
     {
         try { while (!lifetime.IsCancellationRequested) { await Task.Delay(2000, lifetime.Token); await SynchronizeLive(); if (BackgroundPreparation.IsCompleted) SchedulePreparation(); } }
@@ -456,7 +489,7 @@ public sealed class ReaderPane : Grid
                 listRefresh = request;
                 try
                 {
-                    var found = await session.ReaderData.LoadFolder(true, false, 0, folderUrl, request.Token);
+                    var found = await session.ReaderData.LoadFolder(!CanReadCurrentFolder(), false, 0, folderUrl, request.Token);
                     request.Token.ThrowIfCancellationRequested();
                     MergeList(found, true); liveList = true; entryRefreshNeeded = false; nextReload = DateTimeOffset.UtcNow.AddSeconds(60);
                     notice.Text = $"С сайта · {DateTime.Now:HH:mm:ss} · писем: {letters.Count}";
@@ -607,7 +640,7 @@ public sealed class ReaderPane : Grid
             if (more) scrollOffset += 600;
             var found = await session.ReaderData.LoadFolder(refresh, more, scrollOffset, requestedFolder, request.Token);
             request.Token.ThrowIfCancellationRequested();
-            if (refresh) MergeList(found, true);
+            if (!more) MergeList(found, true);
             else foreach (var letter in found) AddLetter(letter);
             liveList = true; nextReload = DateTimeOffset.UtcNow.AddSeconds(60);
             notice.Text = $"С сайта · {DateTime.Now:HH:mm:ss} · писем: {letters.Count}";

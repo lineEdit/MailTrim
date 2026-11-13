@@ -349,10 +349,73 @@ internal static class Program
                 await a.View.CoreWebView2.ExecuteScriptAsync("fetch('https://ad.mail.ru/auth-required').catch(()=>{}); void 0");
                 Check(await authResourceObserved.Task.WaitAsync(TimeSpan.FromSeconds(10)), "request filtering is bypassed for official authentication documents");
                 var oldSource = a.View.CoreWebView2.Source;
-                a.View.CoreWebView2.Navigate("https://evil.example/__mailtrim_fixture");
+                a.View.CoreWebView2.Navigate("https://evil.example:444/private-return-path?token=private-return-token#private-return-fragment");
                 await Task.Delay(500);
                 Check(a.View.CoreWebView2.Source == oldSource, "external automatic navigation stopped");
                 Check(!a.View.CoreWebView2.Settings.AreHostObjectsAllowed && !a.View.CoreWebView2.Settings.IsWebMessageEnabled && !a.View.CoreWebView2.Settings.IsPasswordAutosaveEnabled, "native bridge and password storage disabled");
+                // Exercise the return document before the outer navigation finishes.
+                // A real WebView raises WebResourceRequested for its subresources
+                // while the return navigation is still in flight.
+                var returnResourceAllowed = new TaskCompletionSource<bool>();
+                const string signInRelay = "https://app.mail.ru/__mailtrim_fixture_relay?state=synthetic-relay-state";
+                void SignInReturnFixture(object? sender, CoreWebView2WebResourceRequestedEventArgs e)
+                {
+                    var core = a.View.CoreWebView2;
+                    if (e.Request.Uri == signInRelay)
+                        e.Response = core.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(
+                            "<!doctype html><title>Sign-in relay</title>")), 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
+                    if (e.Request.Uri == "https://e.mail.ru/__mailtrim_auth_return")
+                        e.Response = core.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(
+                            "<!doctype html><title>Mailbox</title><script src='https://ad.mail.ru/__mailtrim_auth_return_resource'></script>")),
+                            200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
+                    if (e.Request.Uri == "https://ad.mail.ru/__mailtrim_auth_return_resource")
+                    {
+                        returnResourceAllowed.TrySetResult(e.Response is null && a.SignInInProgress
+                            && core.Profile.PreferredTrackingPreventionLevel == CoreWebView2TrackingPreventionLevel.None);
+                        e.Response ??= core.Environment.CreateWebResourceResponse(null, 204, "No Content", "Cache-Control: no-store");
+                    }
+                }
+                a.View.CoreWebView2.WebResourceRequested += SignInReturnFixture;
+                try
+                {
+                    await Navigate(a, signInRelay);
+                    Check(a.View.CoreWebView2.Source == signInRelay && a.SignInInProgress
+                        && a.View.CoreWebView2.Profile.PreferredTrackingPreventionLevel == CoreWebView2TrackingPreventionLevel.None,
+                        "the app.mail.ru relay stays in the sign-in view and preserves the ongoing flow");
+                    await Navigate(a, "https://e.mail.ru/__mailtrim_auth_return");
+                    Check(await returnResourceAllowed.Task.WaitAsync(TimeSpan.FromSeconds(10)), "sign-in protection stays active while the return page loads");
+                    Check(!a.SignInInProgress && a.View.CoreWebView2.Profile.PreferredTrackingPreventionLevel == CoreWebView2TrackingPreventionLevel.Balanced,
+                        "the loaded mailbox releases sign-in protection and resumes background checks");
+                    var relayBlocked = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    var core = a.View.CoreWebView2;
+                    void ObserveRelayOutsideSignIn(object? sender, CoreWebView2NavigationStartingEventArgs e)
+                    {
+                        if (e.Uri == signInRelay) relayBlocked.TrySetResult(e.Cancel);
+                    }
+                    core.NavigationStarting += ObserveRelayOutsideSignIn;
+                    try
+                    {
+                        core.Navigate(signInRelay);
+                        Check(await relayBlocked.Task.WaitAsync(TimeSpan.FromSeconds(10)), "app.mail.ru is blocked again after leaving the sign-in flow");
+                    }
+                    finally { core.NavigationStarting -= ObserveRelayOutsideSignIn; }
+                }
+                finally { a.View.CoreWebView2.WebResourceRequested -= SignInReturnFixture; }
+                var signInLog = File.ReadAllLines(Path.Combine(root, "events.log"))
+                    .Select(line => line.Split(' ', 2)[1])
+                    .Where(code => code.StartsWith("mail_signin_", StringComparison.Ordinal)).ToArray();
+                Check(signInLog.LastOrDefault(line => line.StartsWith("mail_signin_navigation_blocked", StringComparison.Ordinal))
+                    == "mail_signin_navigation_blocked scheme=https domain=evil.example",
+                    "blocked sign-in navigation logs only its scheme and DNS domain");
+                var providerOpened = Array.LastIndexOf(signInLog, "mail_signin_top_mail");
+                var relayAllowed = Array.LastIndexOf(signInLog, "mail_signin_app_relay_allowed");
+                var returnStarted = Array.LastIndexOf(signInLog, "mail_signin_return_started");
+                var returnLoaded = Array.LastIndexOf(signInLog, "mail_signin_return_loaded");
+                Check(providerOpened >= 0 && providerOpened < relayAllowed && relayAllowed < returnStarted && returnStarted < returnLoaded
+                    && !signInLog.Any(line => line.Contains("private-return", StringComparison.Ordinal)
+                        || line.Contains("synthetic-relay-state", StringComparison.Ordinal)),
+                    "sign-in diagnostics record the ordered return stages without URL details");
+                await CheckEmbeddedMailbox(store, window, host);
                 paused = true;
                 Console.WriteLine("Applying paused settings…");
                 await a.ApplySettings().WaitAsync(TimeSpan.FromSeconds(15));
@@ -929,6 +992,69 @@ internal static class Program
             finally { foreach (var s in sessions) s.Dispose(); window.Close(); app.Shutdown(); }
         };
         app.Run(window); return result;
+    }
+    private static async Task CheckEmbeddedMailbox(LocalStore store, Window window, Grid host)
+    {
+        const string workspace = "https://app.mail.ru/mail/inbox/?fixture=embedded";
+        const string message = "https://e.mail.ru/inbox/embedded-letter";
+        using var session = new BrowserSession(store, window, _ => { }, () => false, _ => { });
+        host.Children.Add(session.Surface);
+        await session.Initialize(Guid.NewGuid());
+        session.SetActive(true);
+        session.View.CoreWebView2.Stop();
+        ConfigureFixture(session);
+        var core = session.View.CoreWebView2;
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void Ready() => ready.TrySetResult();
+        void Respond(object? sender, CoreWebView2WebResourceRequestedEventArgs e)
+        {
+            var html = e.Request.Uri switch
+            {
+                workspace => "<aside id='outer-ad'>OUTER-PROMO</aside><iframe src='https://e.mail.ru/inbox/?fixture=embedded'></iframe>",
+                "https://e.mail.ru/inbox/?fixture=embedded" => """
+                    <!doctype html><title>Inbox</title><main class="letter-list">
+                    <aside>INNER-PROMO</aside><button aria-label="Написать письмо" onclick="this.dataset.clicked='true'">✎</button>
+                    <a class="js-letter-list-item" href="/inbox/embedded-letter" data-unread="true">
+                    <span>Synthetic sender</span><span>Embedded subject</span><span>Embedded preview</span><span>12:00</span></a>
+                    <a class="js-letter-list-item letter-list-item-adv" href="/inbox/embedded-ad"><span>AD-LIKE ROW</span></a>
+                    </main>
+                    """,
+                message => "<div class='letter-body__body'><p>Embedded body</p></div>",
+                _ => null
+            };
+            if (html is not null)
+                e.Response = core.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(html)),
+                    200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
+        }
+        await Navigate(session, "https://account.mail.ru/__mailtrim_fixture");
+        session.EmbeddedMailboxReady += Ready;
+        core.WebResourceRequested += Respond;
+        ReaderPane? pane = null;
+        try
+        {
+            await Navigate(session, workspace);
+            await ready.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Check(session.Surface.Visibility != Visibility.Visible && !session.SignInInProgress,
+                "embedded mailbox ends sign-in while keeping the provider shell hidden");
+            pane = new ReaderPane(session, () => { });
+            host.Children.Add(pane);
+            await pane.Start();
+            var list = ((DockPanel)pane.Children[0]).Children.OfType<ListBox>().Single();
+            Check(list.Items.Count == 1 && list.Items[0] is ReaderLetter { Subject: "Embedded subject" },
+                "the native renderer only receives validated mail from the official nested document");
+            Check(await session.ReaderData.Compose(default), "compose is routed to the official mailbox control inside the frame");
+            var document = await session.ReaderData.ReadFresh((ReaderLetter)list.Items[0], default).WaitAsync(TimeSpan.FromSeconds(20));
+            Check(document.Blocks.Any(block => block.Text == "Embedded body") && core.Source == workspace,
+                "opening a message navigates inside the mailbox without exposing or reloading the provider shell");
+        }
+        finally
+        {
+            if (pane is not null) { pane.Close(); host.Children.Remove(pane); }
+            host.Children.Remove(session.Surface);
+            session.SetReadingOnly(false);
+            session.EmbeddedMailboxReady -= Ready;
+            core.WebResourceRequested -= Respond;
+        }
     }
     private static void ConfigureFixture(BrowserSession session)
     {

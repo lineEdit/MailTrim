@@ -32,6 +32,7 @@
        <MenuItem Header="Добавить ящик…" Click="Add_Click"/>
        <Separator/>
        <MenuItem Header="Настройки MailTrim…" Click="Settings_Click"/>
+       <MenuItem x:Name="ShowOriginalMenu" Header="Оригинал сайта Mail.ru" Click="ShowOriginal_Click"/>
        <Separator/>
        <MenuItem x:Name="RenameMenu" Header="Переименовать текущий ящик…" Click="Rename_Click"/>
        <MenuItem x:Name="ClearMenu" Header="Очистить сессию текущего ящика…" Click="Clear_Click"/>

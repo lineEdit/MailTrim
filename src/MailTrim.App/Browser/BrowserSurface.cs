@@ -8,11 +8,19 @@ namespace MailTrim.App;
 public sealed class BrowserSurface : Grid
 {
     private readonly WebView2 view;
+    private bool hideProviderShell;
+    internal bool ProviderShellHidden => hideProviderShell;
     public Visibility RequestedVisibility { get; private set; } = Visibility.Visible;
     public BrowserSurface(WebView2 view) { this.view = view; Children.Add(view); }
     public void Initialize(bool background) { if (background) SetRequestedVisibility(Visibility.Hidden); }
     public void SetRequestedVisibility(Visibility visibility)
     {
-        RequestedVisibility = visibility; Visibility = visibility; view.Visibility = visibility;
+        RequestedVisibility = visibility; ApplyVisibility();
+    }
+    internal void HideProviderShell(bool hide) { hideProviderShell = hide; ApplyVisibility(); }
+    private void ApplyVisibility()
+    {
+        Visibility = view.Visibility = hideProviderShell && RequestedVisibility == Visibility.Visible
+            ? Visibility.Hidden : RequestedVisibility;
     }
 }

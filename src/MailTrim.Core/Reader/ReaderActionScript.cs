@@ -6,6 +6,20 @@ public enum ReaderAction { Reply, MarkRead, Archive, Delete }
 
 public static class ReaderActionScript
 {
+    public const string Compose = """
+        (() => {
+          if (location.origin !== 'https://e.mail.ru') return false;
+          const labels = ['Написать письмо', 'Написать', 'Compose'];
+          const buttons = [...document.querySelectorAll('a,button,[role="button"]')].filter(e =>
+            !e.closest('.letter-body,.letter__body,.letter-body__body,.letter-body__body-content,a.js-letter-list-item,form') &&
+            !e.disabled && e.getAttribute('aria-disabled') !== 'true' && e.getBoundingClientRect().height > 0 &&
+            [e.getAttribute('aria-label'),e.getAttribute('title'),e.textContent].some(t => labels.includes((t || '').trim())));
+          if (buttons.length !== 1) return false;
+          buttons[0].click();
+          return true;
+        })()
+        """;
+
     public static string Create(ReaderAction action, string url)
     {
         var labels = action switch

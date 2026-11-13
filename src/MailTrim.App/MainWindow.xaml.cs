@@ -20,6 +20,12 @@ public partial class MainWindow : Window
     private DesktopIntegration? desktop;
     private MailMonitor? monitor;
     private MailboxCacheMonitor? mailboxCache;
+    private bool CanCheckMailProfile(Guid id) => sessions.GetValueOrDefault(id)?.SignInInProgress != true;
+    private void CancelBackgroundMail()
+    {
+        monitor?.CancelCheck();
+        mailboxCache?.CancelCheck();
+    }
     private readonly System.Windows.Threading.DispatcherTimer visibleStatusTimer = new() { Interval = TimeSpan.FromSeconds(3) };
     private readonly Dictionary<Guid, DateTimeOffset> visibleStatusTimes = [];
     private bool readingVisibleStatus;
@@ -29,7 +35,7 @@ public partial class MainWindow : Window
         readingVisibleStatus = true;
         try
         {
-            var json = await session.View.CoreWebView2.ExecuteScriptAsync(MailboxStatusScript.Snapshot);
+            var json = await session.ExecuteMailScript(MailboxStatusScript.Snapshot);
             var snapshot = System.Text.Json.JsonSerializer.Deserialize<MailboxStatusScript.SnapshotResult>(json, FilterRules.Json);
             if (snapshot is { Ready: true, Unread: >= 0 } && ReferenceEquals(Current, session))
             {
@@ -123,7 +129,8 @@ public partial class MainWindow : Window
     private async Task ReturnToMail()
     {
         Current?.SetCloudOpen(false); UpdateWorkspace();
-        if (readerMode && reader is null) await OpenReader();
+        if ((readerMode || Current is { HasEmbeddedMailbox: true, OriginalRequested: false }) && reader is null)
+            await OpenReader();
     }
     private async void Cloud_Click(object sender, RoutedEventArgs e)
     {
@@ -192,8 +199,8 @@ public partial class MainWindow : Window
             var backgroundHost = new Grid { Visibility = Visibility.Hidden, IsHitTestVisible = false };
             ((Grid)Content).Children.Add(backgroundHost);
             Grid.SetRow(backgroundHost, 1);
-            monitor = new MailMonitor(store, backgroundHost, count => desktop.Notify(count), () => !busy, UpdateMailboxStatus); monitor.Start();
-            mailboxCache = new MailboxCacheMonitor(store, this, backgroundHost, () => !busy);
+            monitor = new MailMonitor(store, backgroundHost, count => desktop.Notify(count), () => !busy, UpdateMailboxStatus, CanCheckMailProfile); monitor.Start();
+            mailboxCache = new MailboxCacheMonitor(store, this, backgroundHost, () => !busy, CanCheckMailProfile);
             mailboxCache.Start();
             desktop.CheckRequested += monitor.RequestCheck;
             desktop.CheckRequested += () => { foreach (var pane in gmail.Values) pane.RequestCheck(); };
@@ -227,13 +234,25 @@ public partial class MainWindow : Window
     private async void Reader_Click(object sender, RoutedEventArgs e)
     {
         if (reader is not null) { await Run(reader.OpenOriginal); return; }
+        if (Current is { } current) current.SetOriginalRequested(false);
         await OpenReader();
+    }
+    private void ShowOriginal()
+    {
+        Current?.SetOriginalRequested(true);
+        CloseReader();
+    }
+    private async void ShowOriginal_Click(object sender, RoutedEventArgs e)
+    {
+        if (Current is not { CloudOpen: false }) return;
+        if (reader is not null) await Run(reader.OpenOriginal);
+        else ShowOriginal();
     }
     private async Task OpenReader()
     {
-        if (Current?.View.CoreWebView2 is null) return;
+        if (Current?.View.CoreWebView2 is null || reader is not null) return;
         readerMode = true;
-        reader = new ReaderPane(Current, CloseReader);
+        reader = new ReaderPane(Current, ShowOriginal);
         ReaderHost.Children.Add(reader); BrowserHost.Visibility = Visibility.Hidden;
         ReaderHost.Visibility = Visibility.Visible; ReaderButton.Content = "Оригинал";
         UpdateServiceNavigation();
@@ -292,6 +311,15 @@ public partial class MainWindow : Window
             session = new BrowserSession(store, this, text => { if (Profiles.SelectedItem is AccountProfile p && p.Id == profile.Id) Status.Text = text; }, () => paused);
             session.CloudRequested += url => { if (ReferenceEquals(Current, session)) _ = Run(() => OpenCloud(url)); };
             session.MailRequested += () => { if (ReferenceEquals(Current, session)) _ = Run(ReturnToMail); };
+            session.SignInStarted += CancelBackgroundMail;
+            session.EmbeddedMailboxReady += () =>
+            {
+                _ = Dispatcher.BeginInvoke(async () =>
+                {
+                    if (ReferenceEquals(Current, session) && !session.CloudOpen && !session.OriginalRequested && reader is null)
+                        await OpenReader();
+                });
+            };
             sessions.Add(profile.Id, session); BrowserHost.Children.Add(session.Surface);
             try { await session.Initialize(profile.Id); }
             catch { sessions.Remove(profile.Id); BrowserHost.Children.Remove(session.Surface); session.Dispose(); throw; }
@@ -302,7 +330,7 @@ public partial class MainWindow : Window
         // WebView in the small gap between Navigate() and activation.
         session.SetActive(true); session.SetHostVisible(IsVisible);
         ConnectionStatus.Text = profile.StatusText;
-        if (readerMode && !session.CloudOpen) await OpenReader();
+        if ((readerMode || session.HasEmbeddedMailbox && !session.OriginalRequested) && !session.CloudOpen) await OpenReader();
         UpdateWorkspace();
         if (session.CloudOpen && !session.CloudOriginal) _ = CurrentCloud?.Start();
     }
@@ -310,6 +338,7 @@ public partial class MainWindow : Window
     private void ProfileActions_Click(object sender, RoutedEventArgs e)
     {
         RenameMenu.IsEnabled = Profiles.SelectedItem is AccountProfile;
+        ShowOriginalMenu.IsEnabled = Current is { CloudOpen: false };
         ClearMenu.IsEnabled = RemoveMenu.IsEnabled = Current is not null || CurrentGmail is not null;
         ProfileActionsButton.ContextMenu.PlacementTarget = ProfileActionsButton;
         ProfileActionsButton.ContextMenu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;

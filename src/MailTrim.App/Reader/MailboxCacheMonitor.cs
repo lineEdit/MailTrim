@@ -6,7 +6,7 @@ using MailTrim.Core;
 namespace MailTrim.App;
 
 /// <summary>Separate official web view; never navigates the user's reader or reply editor.</summary>
-public sealed class MailboxCacheMonitor(LocalStore store, Window owner, Grid host, Func<bool> canRun) : IDisposable
+public sealed class MailboxCacheMonitor(LocalStore store, Window owner, Grid host, Func<bool> canRun, Func<Guid, bool>? canRunProfile = null) : IDisposable
 {
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(15) };
     private readonly Dictionary<Guid, DateTimeOffset> nextRun = [];
@@ -32,9 +32,10 @@ public sealed class MailboxCacheMonitor(LocalStore store, Window owner, Grid hos
     }
     public async Task PauseAsync() { paused = true; await StopAsync(); }
     public void Resume() { paused = false; RequestCheck(true); }
+    internal void CancelCheck() => cancellation?.Cancel();
     public async Task StopAsync()
     {
-        cancellation?.Cancel();
+        CancelCheck();
         await running;
     }
     private async Task Check()
@@ -46,6 +47,7 @@ public sealed class MailboxCacheMonitor(LocalStore store, Window owner, Grid hos
             {
                 stop.Token.ThrowIfCancellationRequested();
                 if (!store.Settings.AutomaticMailboxCache || !canRun()) return;
+                if (canRunProfile?.Invoke(profile.Id) == false) continue;
                 if (nextRun.TryGetValue(profile.Id, out var next) && DateTimeOffset.UtcNow < next) continue;
                 using var collector = new BrowserSession(store, owner, _ => { }, () => false);
                 collector.View.Visibility = Visibility.Hidden; collector.View.IsHitTestVisible = false;

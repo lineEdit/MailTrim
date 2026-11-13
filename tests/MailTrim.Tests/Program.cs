@@ -16,10 +16,13 @@ foreach (var url in new[] { "https://e.mail.ru/inbox/", "https://account.mail.ru
 foreach (var url in new[] { "https://account.mail.ru/login", "https://id.vk.com/auth", "https://id.vk.ru/auth" })
     Check(NavigationPolicy.IsAuthentication(url), "official authentication origin " + url);
 Check(!NavigationPolicy.IsAuthentication("https://e.mail.ru/inbox/") && !NavigationPolicy.IsAuthentication("https://cloud.mail.ru/home/"), "mail and Cloud are not authentication documents");
-Check(NavigationPolicy.ShouldPromoteAuthenticationFrame("https://id.vk.ru/auth", "https://e.mail.ru/inbox/")
-    && NavigationPolicy.ShouldPromoteAuthenticationFrame("https://account.mail.ru/login", "https://cloud.mail.ru/home/"), "authenticated Mail and Cloud frame handoffs are promoted");
-Check(!NavigationPolicy.ShouldPromoteAuthenticationFrame("https://e.mail.ru/inbox/", "https://e.mail.ru/inbox/")
-    && !NavigationPolicy.ShouldPromoteAuthenticationFrame("https://id.vk.ru/auth", "https://evil.example/inbox/"), "ordinary and untrusted frame navigation is never promoted");
+Check(NavigationPolicy.IsSignInRelay("https://app.mail.ru/continue?state=fixture")
+    && !NavigationPolicy.IsInternal("https://app.mail.ru/"), "the sign-in relay is outside the ordinary internal navigation list");
+Check(NavigationPolicy.IsMailWorkspace("https://app.mail.ru/mail/inbox/")
+    && !NavigationPolicy.IsMailWorkspace("https://app.mail.ru/cloud/")
+    && !NavigationPolicy.IsMailWorkspace("https://app.mail.ru/mail-other/"), "embedded mail is restricted to the provider mail workspace");
+foreach (var url in new[] { "http://app.mail.ru/", "https://app.mail.ru:444/", "https://user@app.mail.ru/", "https://fake.app.mail.ru/", "https://app.mail.ru.example.test/" })
+    Check(!NavigationPolicy.IsSignInRelay(url), "reject unofficial sign-in relay " + url);
 foreach (var url in new[] { "https://e.mail.ru.evil.test/", "https://evilmail.ru/", "http://e.mail.ru/", "https://e.mail.ru:444/", "https://evil@e.mail.ru/", "file:///C:/Windows/", "javascript:alert(1)", "https://news.mail.ru/" })
     Check(!NavigationPolicy.IsInternal(url), "reject internal " + url);
 Check(!NavigationPolicy.IsExternal("file:///C:/Windows"), "no shell file launch");
@@ -84,7 +87,8 @@ foreach (var json in new[] { "null", "{}", "{\"schemaVersion\":2}", "{\"blockedD
     Check(rejected, "invalid rules rejected " + json);
 }
 var script = CosmeticScript.Create(new FilterRules { HideSelectors = ["[data-testid=\"ad\"]"] }, true, false);
-Check(script.Contains("window.top !== window") && script.Contains("location.origin !== 'https://e.mail.ru'"), "cosmetic origin and frame guard");
+Check(script.Contains("window.top !== window") && script.Contains("location.origin !== 'https://e.mail.ru'")
+    && script.Contains("location.ancestorOrigins[0] !== 'https://app.mail.ru'"), "cosmetic origin and frame guard");
 Check(!script.Contains("fetch(") && !script.Contains("chrome.webview"), "no script network/native bridge");
 Check(CosmeticScript.Create(rules, false, true).Contains("const selectors = [];"), "paused cosmetics empty");
 var notificationSettings = new AppSettings { UseSiteNotifications = true };

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using System.Windows;
 using MailTrim.Core;
 using Microsoft.Web.WebView2.Core;
@@ -17,6 +18,9 @@ public sealed class BrowserSession : IDisposable
     public WebView2 ActiveView => CloudOpen && CloudView is not null ? CloudView : View;
     public event Action<string>? CloudRequested;
     public event Action? MailRequested;
+    public event Action? SignInStarted;
+    public event Action? EmbeddedMailboxReady;
+    public bool SignInInProgress => signInViews.Count > 0;
     public Guid ProfileId { get; private set; }
     public LocalStore Store => store;
     private ReaderDataService? readerData;
@@ -42,6 +46,67 @@ public sealed class BrowserSession : IDisposable
     private readonly Action<string>? externalHandler;
     private readonly List<(Window Window, WebView2 View)> popups = [];
     private readonly Dictionary<WebView2, string> scripts = [];
+    private readonly HashSet<CoreWebView2> signInViews = [];
+    private CoreWebView2Frame? mailFrame;
+    private string? mailFrameSource;
+    private bool embeddedMailboxReady;
+    internal bool OriginalRequested { get; private set; }
+    internal bool IsOpeningEmbeddedMailbox => !OriginalRequested && Surface.ProviderShellHidden && !HasEmbeddedMailbox;
+    internal void SetOriginalRequested(bool value)
+    {
+        OriginalRequested = value;
+        if (value) Surface.HideProviderShell(false);
+    }
+    private const string MailboxDocumentReady = """
+        location.origin === 'https://e.mail.ru' &&
+        !!document.querySelector('a.js-letter-list-item, .letter-list__react, .letter-list, .llct, .thread, .letter-body__body, .compose-app')
+        """;
+
+    internal bool HasEmbeddedMailbox => mailFrame is not null && mailFrameSource is not null
+        && View.CoreWebView2 is { } core && NavigationPolicy.IsMailWorkspace(core.Source);
+    internal string MailSource => HasEmbeddedMailbox ? mailFrameSource! : View.CoreWebView2.Source;
+    internal Task<string> ExecuteMailScript(string script) => HasEmbeddedMailbox
+        ? mailFrame!.ExecuteScriptAsync(script)
+        : View.CoreWebView2.ExecuteScriptAsync(script);
+
+    internal async Task NavigateEmbeddedMail(string url, CancellationToken token)
+    {
+        if (!NavigationPolicy.IsMail(url) || !HasEmbeddedMailbox) throw new System.IO.IOException("mail_origin_required");
+        var frame = mailFrame!;
+        ulong? navigation = null;
+        var loaded = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void Starting(object? sender, CoreWebView2NavigationStartingEventArgs e)
+        {
+            if (e.Uri == url) navigation = e.NavigationId;
+        }
+        void Completed(object? sender, CoreWebView2NavigationCompletedEventArgs e)
+        {
+            if (navigation == e.NavigationId) loaded.TrySetResult(e.IsSuccess);
+        }
+        void Destroyed(object? sender, object e) => loaded.TrySetResult(false);
+        frame.NavigationStarting += Starting;
+        frame.NavigationCompleted += Completed;
+        frame.Destroyed += Destroyed;
+        try
+        {
+            token.ThrowIfCancellationRequested();
+            var destination = JsonSerializer.Serialize(url);
+            // Schedule after the script result is returned so navigation cannot interrupt it.
+            var scheduled = await frame.ExecuteScriptAsync(
+                $"location.origin === 'https://e.mail.ru' && (setTimeout(() => location.assign({destination}), 0), true)");
+            if (scheduled != "true" || !await loaded.Task.WaitAsync(TimeSpan.FromSeconds(15), token))
+                throw new System.IO.IOException("mail_frame_unavailable");
+        }
+        finally
+        {
+            if (frame.IsDestroyed() == 0)
+            {
+                frame.NavigationStarting -= Starting;
+                frame.NavigationCompleted -= Completed;
+                frame.Destroyed -= Destroyed;
+            }
+        }
+    }
     private CoreWebView2Environment? environment;
     private bool disposed;
     private bool clearing;
@@ -164,22 +229,26 @@ public sealed class BrowserSession : IDisposable
         var enteredSignIn = false;
         window.Closed += (_, _) =>
         {
+            if (child.CoreWebView2 is { } core) FinishSignIn(core);
             popups.RemoveAll(p => p.Window == window); scripts.Remove(child); child.Dispose();
             if (!disposed) finished();
         };
         try
         {
             window.Show(); await child.EnsureCoreWebView2Async(environment); await Configure(child, true, cloud: true);
-            child.CoreWebView2.NavigationStarting += (_, e) =>
+            var core = child.CoreWebView2;
+            core.NavigationStarting += (_, e) =>
             {
-                if (NavigationPolicy.IsInternal(e.Uri) && !NavigationPolicy.IsCloud(e.Uri) && !NavigationPolicy.IsMail(e.Uri)) enteredSignIn = true;
-                if (enteredSignIn && (NavigationPolicy.IsCloud(e.Uri) || NavigationPolicy.IsMail(e.Uri)))
-                {
-                    e.Cancel = true; _ = owner.Dispatcher.BeginInvoke(() => { if (popups.Any(p => p.Window == window)) window.Close(); });
-                }
+                enteredSignIn |= NavigationPolicy.IsAuthentication(e.Uri);
             };
-            child.CoreWebView2.WindowCloseRequested += (_, _) => window.Close();
-            child.CoreWebView2.Navigate(url);
+            core.NavigationCompleted += (_, e) =>
+            {
+                if (enteredSignIn && e.IsSuccess && !signInViews.Contains(core)
+                    && (NavigationPolicy.IsCloud(core.Source) || NavigationPolicy.IsMail(core.Source)))
+                    _ = owner.Dispatcher.BeginInvoke(() => { if (popups.Any(p => p.Window == window)) window.Close(); });
+            };
+            core.WindowCloseRequested += (_, _) => window.Close();
+            core.Navigate(url);
         }
         catch { store.Log("cloud_signin_failed"); window.Close(); status("Не удалось открыть официальный вход в Облако."); }
     }
@@ -228,7 +297,12 @@ public sealed class BrowserSession : IDisposable
         var core = view.CoreWebView2;
         var provisionalPopup = closeWorkspacePopup is not null;
         var popupRoutePending = false;
-        var framePromotionPending = false;
+        ulong? signInReturnNavigation = null;
+        ulong? signInNavigation = null;
+        ulong? mailNavigation = null;
+        var primary = ReferenceEquals(view, View) && !background;
+        if (!background && signInViews.Count == 0)
+            core.Profile.PreferredTrackingPreventionLevel = CoreWebView2TrackingPreventionLevel.Balanced;
         core.Settings.AreHostObjectsAllowed = false;
         core.Settings.IsWebMessageEnabled = false;
         core.Settings.IsPasswordAutosaveEnabled = false;
@@ -237,39 +311,55 @@ public sealed class BrowserSession : IDisposable
         core.Settings.AreDefaultContextMenusEnabled = true;
         core.Settings.IsStatusBarEnabled = false;
         if (!popup) core.Settings.AreDefaultScriptDialogsEnabled = !SourceIsHidden(cloud);
-        // VK ID keeps account.mail.ru in a cross-origin frame. After a QR
-        // confirmation Mail may finish by navigating that frame to the inbox,
-        // without replacing the outer id.vk.ru document. Promote that exact
-        // allow-listed handoff to the main WebView so the authenticated session
-        // cannot remain stranded inside an invisible/temporary frame.
-        void AttachAuthenticationFrame(CoreWebView2Frame frame)
+        if (primary)
         {
-            frame.NavigationStarting += (_, e) =>
+            core.FrameCreated += (_, e) => TrackMailboxFrame(core, e.Frame);
+            core.SourceChanged += (_, _) =>
             {
-                if (framePromotionPending || !NavigationPolicy.ShouldPromoteAuthenticationFrame(core.Source, e.Uri)) return;
-                e.Cancel = true;
-                framePromotionPending = true;
-                var destination = e.Uri;
-                store.Log(NavigationPolicy.IsMail(destination) ? "auth_frame_mail_handoff" : "auth_frame_cloud_handoff");
-                _ = owner.Dispatcher.BeginInvoke(() =>
-                {
-                    if (disposed) return;
-                    core.Navigate(destination);
-                });
+                if (NavigationPolicy.IsMailWorkspace(core.Source)) return;
+                mailFrame = null;
+                mailFrameSource = null;
+                embeddedMailboxReady = false;
+                Surface.HideProviderShell(false);
             };
         }
-        core.FrameCreated += (_, e) => AttachAuthenticationFrame(e.Frame);
+        core.FrameNavigationStarting += (_, e) =>
+        {
+            if (!signInViews.Contains(core)) return;
+            if (NavigationPolicy.IsAuthentication(e.Uri)) store.Log("mail_signin_frame_provider");
+            else if (NavigationPolicy.IsMail(e.Uri) || NavigationPolicy.IsCloud(e.Uri)) store.Log("mail_signin_frame_return");
+        };
+        core.FrameNavigationCompleted += (_, e) =>
+        {
+            if (signInViews.Contains(core) && !e.IsSuccess && e.WebErrorStatus != CoreWebView2WebErrorStatus.OperationCanceled)
+                LogSignInFailure(e.HttpStatusCode, "mail_signin_frame_failed");
+        };
         core.NavigationStarting += (_, e) =>
         {
-            // VK ID places the Mail login document in a cross-site frame. Balanced
-            // tracking prevention may reject the short-lived cookies used to return
-            // a successful QR confirmation to the outer VK ID flow. Relax it only
-            // for the exact allow-listed authentication origins and restore it as
-            // soon as Mail or Cloud becomes the top-level document again.
-            core.Profile.PreferredTrackingPreventionLevel = NavigationPolicy.IsAuthentication(e.Uri)
-                ? CoreWebView2TrackingPreventionLevel.None
-                : CoreWebView2TrackingPreventionLevel.Balanced;
             if (popupRoutePending) { e.Cancel = true; return; }
+            if (primary && NavigationPolicy.IsMail(e.Uri)) mailNavigation = e.NavigationId;
+            var mailboxWorkspace = primary && NavigationPolicy.IsMailWorkspace(e.Uri);
+            var fromMail = mailboxWorkspace && (mailNavigation == e.NavigationId
+                || NavigationPolicy.IsMail(core.Source) || NavigationPolicy.IsMailWorkspace(core.Source));
+            // The return can pass through app.mail.ru in the same sign-in view.
+            // Keep tracking the flow until the mailbox itself loads.
+            if (!background && !clearing && NavigationPolicy.IsSignInRelay(e.Uri)
+                && (signInViews.Contains(core) || fromMail))
+            {
+                if (signInViews.Contains(core))
+                {
+                    signInReturnNavigation = null;
+                    signInNavigation = e.NavigationId;
+                    store.Log("mail_signin_app_relay_allowed");
+                }
+                if (mailboxWorkspace && !OriginalRequested && !ReaderReplyOpen)
+                {
+                    Surface.HideProviderShell(true);
+                    status("Загружаю список писем…");
+                    _ = ReportSlowMailbox(core);
+                }
+                return;
+            }
             if (provisionalPopup && NavigationPolicy.IsInternal(e.Uri))
             {
                 var mailTarget = NavigationPolicy.IsMail(e.Uri);
@@ -305,13 +395,36 @@ public sealed class BrowserSession : IDisposable
             }
             if (NavigationPolicy.IsInternal(e.Uri))
             {
-                if (!background) status(NavigationPolicy.IsAuthentication(e.Uri)
-                    ? "Официальный вход · фильтры временно отключены"
-                    : "Загрузка официальной страницы…");
+                if (NavigationPolicy.IsAuthentication(e.Uri))
+                {
+                    if (background && !active) { e.Cancel = true; return; }
+                    signInNavigation = e.NavigationId;
+                    if (signInViews.Add(core))
+                    {
+                        core.Profile.PreferredTrackingPreventionLevel = CoreWebView2TrackingPreventionLevel.None;
+                        store.Log("mail_signin_started");
+                        SignInStarted?.Invoke();
+                    }
+                    if (signInReturnNavigation is not null) store.Log("mail_signin_returned_to_login");
+                    signInReturnNavigation = null;
+                    var host = new Uri(e.Uri).IdnHost;
+                    store.Log(host is "id.vk.ru" or "id.vk.com" or "login.vk.ru" or "login.vk.com" or "oauth.vk.ru" or "oauth.vk.com"
+                        ? "mail_signin_top_vk"
+                        : "mail_signin_top_mail");
+                    status("Официальный вход Mail.ru");
+                }
+                else if (signInViews.Contains(core))
+                {
+                    if (signInReturnNavigation is null) store.Log("mail_signin_return_started");
+                    signInReturnNavigation = e.NavigationId;
+                    status("Mail.ru возвращает вас в ящик…");
+                }
+                else if (!background) status("Загрузка официальной страницы…");
                 return;
             }
             if ((popup || clearing) && e.Uri == "about:blank") return;
             e.Cancel = true;
+            if (signInViews.Contains(core)) store.LogBlockedSignInDestination(e.Uri);
             if (background || !popup && SourceIsHidden(cloud)) return;
             // Do not leak an OAuth redirect URL into another browser automatically.
             if (NavigationPolicy.IsExternal(e.Uri) && e.IsUserInitiated) QueueExternal(e.Uri);
@@ -319,13 +432,45 @@ public sealed class BrowserSession : IDisposable
         };
         core.NavigationCompleted += (_, e) =>
         {
-            framePromotionPending = false;
-            if (background || e.WebErrorStatus == CoreWebView2WebErrorStatus.OperationCanceled) return;
+            if (mailNavigation == e.NavigationId) mailNavigation = null;
+            if (background && !signInViews.Contains(core)) return;
+            if (signInNavigation == e.NavigationId)
+            {
+                signInNavigation = null;
+                if (!e.IsSuccess && e.WebErrorStatus != CoreWebView2WebErrorStatus.OperationCanceled)
+                    LogSignInFailure(e.HttpStatusCode, "mail_signin_provider_failed");
+            }
+            if (signInReturnNavigation == e.NavigationId)
+            {
+                signInReturnNavigation = null;
+                if (e.IsSuccess && (NavigationPolicy.IsMail(core.Source) || NavigationPolicy.IsCloud(core.Source)))
+                {
+                    FinishSignIn(core);
+                    store.Log("mail_signin_return_loaded");
+                }
+                else if (e.WebErrorStatus != CoreWebView2WebErrorStatus.OperationCanceled)
+                    LogSignInFailure(e.HttpStatusCode, "mail_signin_return_failed");
+            }
+            if (e.WebErrorStatus == CoreWebView2WebErrorStatus.OperationCanceled) return;
+            if (primary && e.IsSuccess && NavigationPolicy.IsMailWorkspace(core.Source))
+            {
+                if (!HasEmbeddedMailbox && !OriginalRequested) status("Загружаю список писем…");
+                return;
+            }
+            if (e.IsSuccess && signInViews.Contains(core))
+            {
+                status("Официальный вход Mail.ru");
+                return;
+            }
             status(e.IsSuccess ? $"Готово · заблокировано запросов: {blocked}" : "Страница не загрузилась. Проверьте сеть или временно отключите фильтры.");
             if (!e.IsSuccess) store.Log("navigation_failed");
             else if (!popup && !cloud && NavigationPolicy.IsMail(core.Source)) _ = RecoverStalledMailRedirect(view, core.Source);
         };
-        core.ServerCertificateErrorDetected += (_, e) => e.Action = CoreWebView2ServerCertificateErrorAction.Cancel;
+        core.ServerCertificateErrorDetected += (_, e) =>
+        {
+            if (signInViews.Contains(core)) store.Log("mail_signin_certificate_error");
+            e.Action = CoreWebView2ServerCertificateErrorAction.Cancel;
+        };
         // Let WebView2 own notification display/click/close. Drop unsolicited origins,
         // muted notifications and the alternate polling mode, even with a prior permission.
         core.NotificationReceived += (_, e) => e.Handled = background || !SiteNotificationPolicy.CanDeliver(store.Settings, e.SenderOrigin);
@@ -353,11 +498,12 @@ public sealed class BrowserSession : IDisposable
         {
             // Official Mail.ru/VK ID sign-in embeds resources from several provider
             // origins. Never apply advertising rules while that authentication
-            // document is active; filtering resumes as soon as e.mail.ru or Cloud
-            // becomes the top-level page again.
-            var enabled = store.Settings.BlockRequests && !paused() && !NavigationPolicy.IsAuthentication(core.Source);
+            // document is active or its return page is still loading.
+            var enabled = store.Settings.BlockRequests && !paused() && !signInViews.Contains(core)
+                && !NavigationPolicy.IsAuthentication(core.Source);
+            var mailDocument = ReferenceEquals(view, View) && HasEmbeddedMailbox ? MailSource : core.Source;
             var promotionModule = !popup && !cloud && e.ResourceContext == CoreWebView2WebResourceContext.Script
-                && PromotionModulePolicy.ShouldBlockScript(e.Request.Uri, core.Source, store.Rules, enabled);
+                && PromotionModulePolicy.ShouldBlockScript(e.Request.Uri, mailDocument, store.Rules, enabled);
             if (!promotionModule && !store.Rules.ShouldBlock(e.Request.Uri, enabled)) return;
             e.Response = environment!.CreateWebResourceResponse(null, 403, "Blocked by MailTrim", "Cache-Control: no-store");
             blocked++;
@@ -366,6 +512,7 @@ public sealed class BrowserSession : IDisposable
         core.NewWindowRequested += async (_, e) =>
         {
             e.Handled = true;
+            if (signInViews.Contains(core)) store.Log("mail_signin_popup_requested");
             if (background) return;
             if (!popup && SourceIsHidden(cloud)) return;
             if (cloud && !popup && NavigationPolicy.IsMail(e.Uri))
@@ -381,6 +528,7 @@ public sealed class BrowserSession : IDisposable
             }
             if (!NavigationPolicy.IsInternal(e.Uri) && e.Uri != "about:blank")
             {
+                if (signInViews.Contains(core)) store.LogBlockedSignInDestination(e.Uri, popup: true);
                 if (e.IsUserInitiated && NavigationPolicy.IsExternal(e.Uri)) QueueExternal(e.Uri);
                 return;
             }
@@ -389,7 +537,11 @@ public sealed class BrowserSession : IDisposable
             var child = new WebView2();
             var window = new Window { Owner = owner, Title = "MailTrim • окно сайта", Width = 720, Height = 780, Content = child, WindowStartupLocation = WindowStartupLocation.CenterOwner };
             popups.Add((window, child));
-            window.Closed += (_, _) => { popups.RemoveAll(p => p.Window == window); scripts.Remove(child); child.Dispose(); };
+            window.Closed += (_, _) =>
+            {
+                if (child.CoreWebView2 is { } popupCore) FinishSignIn(popupCore);
+                popups.RemoveAll(p => p.Window == window); scripts.Remove(child); child.Dispose();
+            };
             try
             {
                 window.Show();
@@ -423,6 +575,93 @@ public sealed class BrowserSession : IDisposable
         SetTheme(view);
     }
 
+    private async Task ReportSlowMailbox(CoreWebView2 core)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(12));
+        if (disposed || !IsOpeningEmbeddedMailbox || !NavigationPolicy.IsMailWorkspace(core.Source)) return;
+        status("Список писем ещё не распознан. «Оригинал сайта» доступен в меню ⋯.");
+    }
+
+    private void TrackMailboxFrame(CoreWebView2 core, CoreWebView2Frame frame)
+    {
+        ulong? navigation = null;
+        string? destination = null;
+        frame.NavigationStarting += (_, e) =>
+        {
+            navigation = e.NavigationId;
+            destination = NavigationPolicy.IsMail(e.Uri) ? e.Uri : null;
+            if (ReferenceEquals(mailFrame, frame)) mailFrameSource = null;
+        };
+        frame.Destroyed += (_, _) =>
+        {
+            if (!ReferenceEquals(mailFrame, frame)) return;
+            mailFrame = null;
+            mailFrameSource = null;
+        };
+        frame.NavigationCompleted += async (_, e) =>
+        {
+            if (!e.IsSuccess || e.NavigationId != navigation || destination is null || disposed
+                || !NavigationPolicy.IsMailWorkspace(core.Source)) return;
+            var source = destination;
+            try
+            {
+                if (ReferenceEquals(mailFrame, frame) && embeddedMailboxReady)
+                {
+                    mailFrameSource = source;
+                    return;
+                }
+                // The provider mounts the message list asynchronously after the iframe loads.
+                for (int attempt = 0; attempt < 50; attempt++)
+                {
+                    if (disposed || navigation != e.NavigationId || frame.IsDestroyed() != 0
+                        || !NavigationPolicy.IsMailWorkspace(core.Source)) return;
+                    if (await frame.ExecuteScriptAsync(MailboxDocumentReady) == "true")
+                    {
+                        if (disposed || navigation != e.NavigationId || frame.IsDestroyed() != 0
+                            || !NavigationPolicy.IsMailWorkspace(core.Source)) return;
+                        mailFrame = frame;
+                        mailFrameSource = source;
+                        FinishSignIn(core);
+                        if (!embeddedMailboxReady)
+                        {
+                            embeddedMailboxReady = true;
+                            store.Log("mail_signin_embedded_mail_ready");
+                            status("Почта Mail.ru подключена");
+                            EmbeddedMailboxReady?.Invoke();
+                        }
+                        return;
+                    }
+                    await Task.Delay(200);
+                }
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.COMException)
+            {
+                // The provider replaced or closed the frame during the probe.
+            }
+        };
+    }
+
+    private void LogSignInFailure(int httpStatusCode, string stage)
+    {
+        var reason = httpStatusCode switch
+        {
+            401 => "_unauthorized",
+            403 => "_forbidden",
+            429 => "_rate_limited",
+            >= 400 and < 500 => "_client_error",
+            >= 500 and < 600 => "_server_error",
+            _ => ""
+        };
+        store.Log(stage + reason);
+    }
+
+    private void FinishSignIn(CoreWebView2 core)
+    {
+        // Mail, Cloud and sign-in popups share this WebView2 profile.
+        if (signInViews.Remove(core) && signInViews.Count == 0)
+            core.Profile.PreferredTrackingPreventionLevel = CoreWebView2TrackingPreventionLevel.Balanced;
+    }
+
     private async Task RecoverStalledMailRedirect(WebView2 view, string completedSource)
     {
         try
@@ -436,6 +675,7 @@ public sealed class BrowserSession : IDisposable
             var json = await core.ExecuteScriptAsync("(() => ({Title:(document.title||'').trim(),HasMail:!!document.querySelector('.letter-list__react,.llct,.letter-list,.thread,.compose-app'),HasLogin:!!document.querySelector('input[type=password],form')}))()");
             var snapshot = System.Text.Json.JsonSerializer.Deserialize<RedirectDocument>(json);
             if (!IsStalledMailRedirect(snapshot?.Title, snapshot?.HasMail == true, snapshot?.HasLogin == true) || core.Source != completedSource) return;
+            store.Log("mail_stalled_redirect");
             status("Сессия Mail.ru истекла · открываю официальный вход…");
             core.Navigate("https://account.mail.ru/login/?page=https%3A%2F%2Fe.mail.ru%2Finbox%2F");
         }
@@ -486,7 +726,12 @@ public sealed class BrowserSession : IDisposable
             await LeaveDocument(View);
             await View.CoreWebView2.Profile.ClearBrowsingDataAsync(CoreWebView2BrowsingDataKinds.AllProfile);
         }
-        finally { clearing = false; }
+        finally
+        {
+            if (CloudView?.CoreWebView2 is { } cloudCore) FinishSignIn(cloudCore);
+            if (View.CoreWebView2 is { } mailCore) FinishSignIn(mailCore);
+            clearing = false;
+        }
     }
     private static async Task LeaveDocument(WebView2 view)
     {
@@ -513,6 +758,7 @@ public sealed class BrowserSession : IDisposable
     {
         disposed = true; readerData?.Dispose();
         foreach (var p in popups.ToArray()) p.Window.Close();
+        foreach (var core in signInViews.ToArray()) FinishSignIn(core);
         CloudView?.Dispose(); View.Dispose(); scripts.Clear();
     }
 }
