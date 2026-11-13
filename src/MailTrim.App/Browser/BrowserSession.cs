@@ -272,7 +272,13 @@ public sealed class BrowserSession : IDisposable
                 if (!SourceIsHidden(true)) owner.Dispatcher.BeginInvoke(() => { if (!disposed) MailRequested?.Invoke(); });
                 return;
             }
-            if (NavigationPolicy.IsInternal(e.Uri)) { if (!background) status("Загрузка официальной страницы…"); return; }
+            if (NavigationPolicy.IsInternal(e.Uri))
+            {
+                if (!background) status(NavigationPolicy.IsAuthentication(e.Uri)
+                    ? "Официальный вход · фильтры временно отключены"
+                    : "Загрузка официальной страницы…");
+                return;
+            }
             if ((popup || clearing) && e.Uri == "about:blank") return;
             e.Cancel = true;
             if (background || !popup && SourceIsHidden(cloud)) return;
@@ -313,7 +319,11 @@ public sealed class BrowserSession : IDisposable
         core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All, CoreWebView2WebResourceRequestSourceKinds.All);
         core.WebResourceRequested += (_, e) =>
         {
-            var enabled = store.Settings.BlockRequests && !paused();
+            // Official Mail.ru/VK ID sign-in embeds resources from several provider
+            // origins. Never apply advertising rules while that authentication
+            // document is active; filtering resumes as soon as e.mail.ru or Cloud
+            // becomes the top-level page again.
+            var enabled = store.Settings.BlockRequests && !paused() && !NavigationPolicy.IsAuthentication(core.Source);
             var promotionModule = !popup && !cloud && e.ResourceContext == CoreWebView2WebResourceContext.Script
                 && PromotionModulePolicy.ShouldBlockScript(e.Request.Uri, core.Source, store.Rules, enabled);
             if (!promotionModule && !store.Rules.ShouldBlock(e.Request.Uri, enabled)) return;

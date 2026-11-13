@@ -342,6 +342,10 @@ internal static class Program
                 a.View.CoreWebView2.NotificationReceived -= captureNotification;
                 await Navigate(a, "https://account.mail.ru/__mailtrim_fixture");
                 Check(await a.View.CoreWebView2.ExecuteScriptAsync("document.getElementById('mailtrim-cosmetic-style') === null") == "true", "no cosmetics on login origin");
+                var authResourceObserved = new TaskCompletionSource<bool>();
+                a.View.CoreWebView2.WebResourceRequested += (_, e) => { if (e.Request.Uri == "https://ad.mail.ru/auth-required") authResourceObserved.TrySetResult(e.Response?.StatusCode != 403); };
+                await a.View.CoreWebView2.ExecuteScriptAsync("fetch('https://ad.mail.ru/auth-required').catch(()=>{}); void 0");
+                Check(await authResourceObserved.Task.WaitAsync(TimeSpan.FromSeconds(10)), "request filtering is bypassed for official authentication documents");
                 var oldSource = a.View.CoreWebView2.Source;
                 a.View.CoreWebView2.Navigate("https://evil.example/__mailtrim_fixture");
                 await Task.Delay(500);

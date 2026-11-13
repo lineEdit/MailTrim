@@ -13,6 +13,9 @@ Check((savingProgress with { Stage = CacheStage.Complete, Completed = 10 }).Perc
 Check(!new AppSettings().AutomaticMailboxCache, "automatic whole-mailbox reading requires opting in once");
 foreach (var url in new[] { "https://e.mail.ru/inbox/", "https://account.mail.ru/login", "https://id.vk.com/auth" })
     Check(NavigationPolicy.IsInternal(url), "official origin " + url);
+foreach (var url in new[] { "https://account.mail.ru/login", "https://id.vk.com/auth", "https://id.vk.ru/auth" })
+    Check(NavigationPolicy.IsAuthentication(url), "official authentication origin " + url);
+Check(!NavigationPolicy.IsAuthentication("https://e.mail.ru/inbox/") && !NavigationPolicy.IsAuthentication("https://cloud.mail.ru/home/"), "mail and Cloud are not authentication documents");
 foreach (var url in new[] { "https://e.mail.ru.evil.test/", "https://evilmail.ru/", "http://e.mail.ru/", "https://e.mail.ru:444/", "https://evil@e.mail.ru/", "file:///C:/Windows/", "javascript:alert(1)", "https://news.mail.ru/" })
     Check(!NavigationPolicy.IsInternal(url), "reject internal " + url);
 Check(!NavigationPolicy.IsExternal("file:///C:/Windows"), "no shell file launch");
